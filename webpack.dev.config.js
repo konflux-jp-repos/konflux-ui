@@ -17,11 +17,11 @@ export default merge(commonConfig, {
     server: 'https',
     proxy: [
       {
-        context: (path) => path.includes('/oauth2/'),
+        context: (path) => path.includes('/oauth2/') || path.includes('/idp/'),
         target: process.env.AUTH_URL,
         secure: false,
         changeOrigin: true,
-        autoRewrite: false,
+        autoRewrite: true,
         toProxy: true,
         headers: {
           'X-Forwarded-Host': `localhost:${DEV_SERVER_PORT}`,
@@ -30,8 +30,8 @@ export default merge(commonConfig, {
           const location = proxyRes.headers['location'];
           if (location) {
             proxyRes.headers['location'] = location.replace(
-              'konflux-ui.apps.stone-stg-rh01.l2vh.p1.openshiftapps.com%2Foauth2',
-              `localhost:${DEV_SERVER_PORT}/oauth2`,
+              `localhost:9443`,
+              `localhost:${DEV_SERVER_PORT}`,
             );
           }
         },
