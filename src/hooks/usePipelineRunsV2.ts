@@ -323,7 +323,7 @@ export const usePipelineRunsForCommitV2 = (
           matchExpressions:
             filterByComponents && componentNames.length > 0
               ? [{ key: PipelineRunLabel.COMPONENT, operator: 'In', values: componentNames }]
-              : undefined,
+              : [],
           filterByCommit: commit,
         },
         enabled: isKubearchiveEnabled,
@@ -342,10 +342,10 @@ export const usePipelineRunsForCommitV2 = (
   );
 
   return React.useMemo(() => {
-    if (plrsLoaded) {
-      return [pipelineRuns as PipelineRunKind[], plrsLoaded, plrError, getNextPage, nextPageProps];
+    if (!plrsLoaded || plrError) {
+      return [[], plrsLoaded, plrError ?? 'Error', undefined, undefined];
     }
-    return [[], plrsLoaded, plrError ?? 'Error', undefined, undefined];
+    return [pipelineRuns as PipelineRunKind[], plrsLoaded, plrError, getNextPage, nextPageProps];
   }, [
     // usePipelineRunV2 variables
     pipelineRuns,
