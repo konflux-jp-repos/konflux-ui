@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { differenceBy, uniqBy } from 'lodash-es';
+import { PipelineRunLabel } from '~/consts/pipelinerun';
 import { useIsOnFeatureFlag } from '~/feature-flags/hooks';
 import { useKubearchiveListResourceQuery } from '~/kubearchive/hooks';
 import { createKubearchiveWatchResource } from '~/utils/task-run-filter-transforms';
@@ -9,7 +10,6 @@ import { useDeepCompareMemoize } from '../shared';
 import { PipelineRunKind } from '../types';
 import { WatchK8sResource, Selector } from '../types/k8s';
 import { getCommitSha } from '../utils/commits-utils';
-import { EQ } from '../utils/tekton-results';
 import { useApplication } from './useApplications';
 import { useComponents } from './useComponents';
 import { GetNextPage, NextPageProps, useTRPipelineRuns } from './useTektonResults';
