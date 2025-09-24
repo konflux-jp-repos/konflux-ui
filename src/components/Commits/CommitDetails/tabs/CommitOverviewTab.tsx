@@ -14,6 +14,7 @@ import {
 import { getErrorState } from '~/shared/utils/error-utils';
 import { PipelineRunLabel, PipelineRunType } from '../../../../consts/pipelinerun';
 import { usePipelineRunsForCommit } from '../../../../hooks/usePipelineRuns';
+import { usePipelineRunsForCommitV2 } from '../../../../hooks/usePipelineRunsV2';
 import { RouterParams } from '../../../../routes/utils';
 import { Timestamp } from '../../../../shared';
 import ExternalLink from '../../../../shared/components/links/ExternalLink';
@@ -38,6 +39,11 @@ const CommitOverviewTab: React.FC = () => {
     applicationName,
     commitName,
   );
+  // eslint-disable-next-line no-console
+  console.log(pipelineRuns);
+  const [x] = usePipelineRunsForCommitV2(namespace, applicationName, commitName);
+  // eslint-disable-next-line no-console
+  console.log(x);
 
   const commit = React.useMemo(
     () =>
