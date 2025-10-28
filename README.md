@@ -105,3 +105,5 @@ In the project directory, you can run:
 - [Jest](https://jestjs.io/) - Testing framework
 - [ESLint](https://eslint.org/) - TypeScript linting
 - [Stylelint](https://stylelint.io/) - SASS linting
+
+Test

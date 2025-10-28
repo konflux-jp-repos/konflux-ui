@@ -11,4 +11,4 @@ export type TableDataProps = {
 export const TableData: React.FC<React.PropsWithChildren<TableDataProps>> = ({
   className,
   ...props
-}) => <td {...props} className={className} role="gridcell" />;
+}) => <td {...props} className={className} role="gridcell" data-test="aaaa" />;
