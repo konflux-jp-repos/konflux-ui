@@ -612,7 +612,8 @@ spec:
       optional: true
     - name: netrc
       optional: true
-  taskRunTemplate: {}
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-konflux-ui
   workspaces:
   - name: git-auth
     secret:
