@@ -14,16 +14,18 @@ const renderMultiSelect = (props: React.ComponentProps<typeof MultiSelect>) =>
     </Toolbar>,
   );
 
+const defaultOptions = [{ key: 'main' }, { key: 'release-1.0' }];
+
 describe('MultiSelect', () => {
   const defaultProps = {
     label: 'Version',
     filterKey: 'version',
     values: [] as string[],
     setValues: jest.fn(),
-    options: { main: 0, 'release-1.0': 0 },
+    options: defaultOptions,
   };
 
-  it('should render options with raw keys when optionLabels is not provided', async () => {
+  it('should render options with raw keys when labels are not provided', async () => {
     const user = userEvent.setup();
 
     renderMultiSelect(defaultProps);
@@ -34,11 +36,14 @@ describe('MultiSelect', () => {
     expect(screen.getByText('release-1.0')).toBeInTheDocument();
   });
 
-  it('should render display labels from optionLabels instead of raw keys', async () => {
+  it('should render display labels from options instead of raw keys', async () => {
     const user = userEvent.setup();
-    const optionLabels = { main: 'Main Branch', 'release-1.0': 'Release 1.0' };
+    const options = [
+      { key: 'main', label: 'Main Branch' },
+      { key: 'release-1.0', label: 'Release 1.0' },
+    ];
 
-    renderMultiSelect({ ...defaultProps, optionLabels });
+    renderMultiSelect({ ...defaultProps, options });
 
     await user.click(screen.getByRole('button', { name: 'Version filter menu' }));
 
@@ -46,10 +51,13 @@ describe('MultiSelect', () => {
     expect(screen.getByText('Release 1.0')).toBeInTheDocument();
   });
 
-  it('should show chip labels using optionLabels mapping', () => {
-    const optionLabels = { main: 'Main Branch', 'release-1.0': 'Release 1.0' };
+  it('should show chip labels using option label mapping', () => {
+    const options = [
+      { key: 'main', label: 'Main Branch' },
+      { key: 'release-1.0', label: 'Release 1.0' },
+    ];
 
-    renderMultiSelect({ ...defaultProps, values: ['main'], optionLabels });
+    renderMultiSelect({ ...defaultProps, values: ['main'], options });
 
     expect(screen.getByText('Main Branch')).toBeInTheDocument();
   });
@@ -57,13 +65,16 @@ describe('MultiSelect', () => {
   it('should remove the correct key when a chip with a mapped label is deleted', async () => {
     const setValues = jest.fn();
     const user = userEvent.setup();
-    const optionLabels = { main: 'Main Branch', 'release-1.0': 'Release 1.0' };
+    const options = [
+      { key: 'main', label: 'Main Branch' },
+      { key: 'release-1.0', label: 'Release 1.0' },
+    ];
 
     renderMultiSelect({
       ...defaultProps,
       values: ['main', 'release-1.0'],
       setValues,
-      optionLabels,
+      options,
     });
 
     const mainChip = screen.getByText('Main Branch');
@@ -75,7 +86,7 @@ describe('MultiSelect', () => {
     expect(setValues).toHaveBeenCalledWith(['release-1.0']);
   });
 
-  it('should show raw key in chips when optionLabels is not provided', () => {
+  it('should show raw key in chips when labels are not provided', () => {
     renderMultiSelect({ ...defaultProps, values: ['main'] });
 
     expect(screen.getByText('main')).toBeInTheDocument();
