@@ -1,7 +1,8 @@
+import { TEXT_SEARCH_TYPES } from '~/consts/constants';
 import { PipelineRunLabel } from '~/consts/pipelinerun';
 import { pipelineRunTypes } from '~/utils/pipelinerun-utils';
 import { mockPipelineRuns } from '../../../Components/__data__/mock-pipeline-run';
-import { createFilterObj } from '../filter-utils';
+import { createFilterObj, createTextSearchFilterObj } from '../filter-utils';
 
 const pipelineRuns = [
   {
@@ -87,6 +88,35 @@ describe('filter-utils', () => {
         { key: 'build', count: undefined, label: 'Build' },
         { key: 'test', count: undefined, label: 'Test' },
       ]);
+    });
+  });
+
+  describe('createTextSearchFilterObj', () => {
+    it('should set name filter when search type is Name', () => {
+      const setFilters = jest.fn();
+      const filters = { name: '', version: 'old' };
+
+      createTextSearchFilterObj('test-name', TEXT_SEARCH_TYPES.NAME, filters, setFilters);
+
+      expect(setFilters).toHaveBeenCalledWith({ name: 'test-name', version: 'old' });
+    });
+
+    it('should set version filter when search type is Version', () => {
+      const setFilters = jest.fn();
+      const filters = { name: 'old', version: '' };
+
+      createTextSearchFilterObj('v1.0', TEXT_SEARCH_TYPES.VERSION, filters, setFilters);
+
+      expect(setFilters).toHaveBeenCalledWith({ name: 'old', version: 'v1.0' });
+    });
+
+    it('should clear version when search type is unknown', () => {
+      const setFilters = jest.fn();
+      const filters = { name: '', version: 'stale' };
+
+      createTextSearchFilterObj('test', 'unknown', filters, setFilters);
+
+      expect(setFilters).toHaveBeenCalledWith({ name: 'test', version: '' });
     });
   });
 });

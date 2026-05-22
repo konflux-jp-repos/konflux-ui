@@ -2,6 +2,7 @@ import { Table as PfTable, TableHeader } from '@patternfly/react-table/deprecate
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { pipelineWithCommits } from '~/components/Commits/__data__/pipeline-with-commits';
 import { FilterContextProvider } from '~/components/Filter/generic/FilterContext';
+import { TEXT_SEARCH_TYPES } from '~/consts/constants';
 import { runStatus } from '~/consts/pipelinerun';
 import { useComponent } from '~/hooks/useComponents';
 import { usePipelineRunsV2 } from '~/hooks/usePipelineRunsV2';
@@ -163,14 +164,23 @@ describe('CommitsListViewV2', () => {
     expect(screen.getByText('#12 test-title-3')).toBeInTheDocument();
   });
 
-  it('should show version filter when versionName is not provided', () => {
+  it('should not show search type dropdown when versionName is not provided', () => {
     renderWithQueryClient(<CommitsListV2 />);
-    const versionButtons = screen.getAllByRole('button', { name: 'Version filter menu' });
-    expect(versionButtons.length).toBeGreaterThan(0);
+    expect(
+      screen
+        .queryAllByRole('button', { name: TEXT_SEARCH_TYPES.NAME })
+        .find((button) => button.classList.contains('pf-v5-c-menu-toggle')),
+    ).toBeUndefined();
+    expect(screen.getByPlaceholderText('Filter by name...')).toBeVisible();
   });
 
-  it('should hide version filter when versionName is provided', () => {
+  it('should show Name/Version search dropdown when versionName is provided', () => {
     renderWithQueryClient(<CommitsListV2 versionName="main" />);
+    expect(
+      screen
+        .getAllByRole('button', { name: TEXT_SEARCH_TYPES.NAME })
+        .find((button) => button.classList.contains('pf-v5-c-menu-toggle')),
+    ).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Version filter menu' })).not.toBeInTheDocument();
   });
 
