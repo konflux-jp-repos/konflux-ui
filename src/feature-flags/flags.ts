@@ -73,7 +73,7 @@ const InternalFLAGS = {
   'issues-dashboard': {
     key: 'issues-dashboard',
     description: 'Show Summary of Issues in your Konflux content',
-    defaultEnabled: false,
+    defaultEnabled: true,
     status: 'ready',
     guard: {
       allOf: ['isKiteServiceEnabled'],
