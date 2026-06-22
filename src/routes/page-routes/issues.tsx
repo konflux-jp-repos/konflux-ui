@@ -1,5 +1,5 @@
 import { issuesPageLoader } from '~/components/Issues';
-import { ensureFeatureFlagOnLoader } from '~/feature-flags/utils';
+import { ensureConditionOnLoader } from '~/feature-flags/utils';
 import { ISSUES_PATH } from '../paths';
 import { RouteErrorBoundry } from '../RouteErrorBoundary';
 
@@ -7,8 +7,11 @@ const issuesRoutes = [
   /* Issues Page */
   {
     path: ISSUES_PATH.path,
+    loader: async () => {
+      await ensureConditionOnLoader(['isKiteServiceEnabled'], 'issues-dashboard', 'Kite Service');
+      return null;
+    },
     lazy: async () => {
-      ensureFeatureFlagOnLoader('issues-dashboard');
       const { default: Component } = await import(
         '~/components/Issues/Issues' /* webpackChunkName: "issues" */
       );

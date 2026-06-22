@@ -1,3 +1,5 @@
+import { redirect } from 'react-router-dom';
+import { SERVICE_UNAVAILABLE_PATH } from '@routes/paths';
 import { HttpError } from '~/k8s/error';
 import { ConditionKey } from './conditions';
 import { FLAGS, type FlagKey } from './flags';
@@ -34,4 +36,16 @@ export const getAllConditionsKeysFromFlags = (): ConditionKey[] => {
 
 export const ensureConditionIsOn = (keys: ConditionKey[]) => () => {
   return keys.every((key) => FeatureFlagsStore.conditions[key]);
+};
+
+export const ensureConditionOnLoader = async (keys: ConditionKey[], flag: FlagKey, message?: string): Promise<void> => {
+  await FeatureFlagsStore.ensureConditions(keys);
+  if (!isFeatureFlagOn(flag)) {
+    throw HttpError.fromCode(404);
+  }
+  if (!ensureConditionIsOn(keys)()) {
+    const redirectMessage = `${message ?? 'The required service'} is not available in this cluster.`;
+    const params = new URLSearchParams({ message: redirectMessage });
+    throw redirect(`/${SERVICE_UNAVAILABLE_PATH.path}?${params.toString()}`);
+  }
 };
