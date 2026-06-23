@@ -8,7 +8,7 @@ const issuesRoutes = [
   {
     path: ISSUES_PATH.path,
     loader: async () => {
-      await ensureConditionOnLoader(['isKiteServiceEnabled'], 'issues-dashboard', 'Kite Service');
+      await ensureConditionOnLoader(['isKiteServiceEnabled'], 'issues-dashboard');
       return null;
     },
     lazy: async () => {

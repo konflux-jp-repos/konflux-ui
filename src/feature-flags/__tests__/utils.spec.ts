@@ -151,7 +151,7 @@ describe('feature-flags utils', () => {
       mockStore.conditions = { isKiteServiceEnabled: true };
       const callOrder: string[] = [];
 
-      mockEnsureConditions.mockImplementation(async () => {
+      mockEnsureConditions.mockImplementation(() => {
         callOrder.push('ensureConditions');
       });
       mockIsOn.mockImplementation(() => {
@@ -173,26 +173,20 @@ describe('feature-flags utils', () => {
       ).rejects.toThrow(HttpError);
     });
 
-    it('redirects with custom message prefix when condition is off', async () => {
-      mockStore.conditions = { isKiteServiceEnabled: false };
-
-      await expect(
-        ensureConditionOnLoader(['isKiteServiceEnabled'], 'issues-dashboard', 'Kite Service'),
-      ).rejects.toEqual(
-        redirect('/service-unavailable?message=Kite+Service+is+not+available+in+this+cluster.'),
-      );
-    });
-
-    it('redirects with default message when custom message is not provided', async () => {
+    it('redirects with condition key when condition is off', async () => {
       mockStore.conditions = { isKiteServiceEnabled: false };
 
       await expect(
         ensureConditionOnLoader(['isKiteServiceEnabled'], 'issues-dashboard'),
-      ).rejects.toEqual(
-        redirect(
-          '/service-unavailable?message=The+required+service+is+not+available+in+this+cluster.',
-        ),
-      );
+      ).rejects.toEqual(redirect('/service-unavailable?condition=isKiteServiceEnabled'));
+    });
+
+    it('redirects with the first failed condition when multiple keys are off', async () => {
+      mockStore.conditions = { isKiteServiceEnabled: false, isKubearchiveEnabled: false };
+
+      await expect(
+        ensureConditionOnLoader(['isKiteServiceEnabled', 'isKubearchiveEnabled'], 'issues-dashboard'),
+      ).rejects.toEqual(redirect('/service-unavailable?condition=isKiteServiceEnabled'));
     });
 
     it('does not throw when flag and conditions are on', async () => {

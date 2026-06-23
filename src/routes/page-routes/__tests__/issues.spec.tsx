@@ -76,7 +76,6 @@ describe('Issues Routes Configuration', () => {
       expect(mockEnsureConditionOnLoader).toHaveBeenCalledWith(
         ['isKiteServiceEnabled'],
         'issues-dashboard',
-        'Kite Service',
       );
     });
 

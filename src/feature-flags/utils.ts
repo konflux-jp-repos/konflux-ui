@@ -38,14 +38,14 @@ export const ensureConditionIsOn = (keys: ConditionKey[]) => () => {
   return keys.every((key) => FeatureFlagsStore.conditions[key]);
 };
 
-export const ensureConditionOnLoader = async (keys: ConditionKey[], flag: FlagKey, message?: string): Promise<void> => {
+export const ensureConditionOnLoader = async (keys: ConditionKey[], flag: FlagKey): Promise<void> => {
   await FeatureFlagsStore.ensureConditions(keys);
   if (!isFeatureFlagOn(flag)) {
     throw HttpError.fromCode(404);
   }
   if (!ensureConditionIsOn(keys)()) {
-    const redirectMessage = `${message ?? 'The required service'} is not available in this cluster.`;
-    const params = new URLSearchParams({ message: redirectMessage });
+    const failedCondition = keys.find((key) => !FeatureFlagsStore.conditions[key]) ?? keys[0];
+    const params = new URLSearchParams({ condition: failedCondition });
     throw redirect(`/${SERVICE_UNAVAILABLE_PATH.path}?${params.toString()}`);
   }
 };

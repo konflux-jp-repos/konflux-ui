@@ -12,14 +12,14 @@ import {
 } from '@patternfly/react-core';
 import { ExclamationCircleIcon } from '@patternfly/react-icons/dist/esm/icons/exclamation-circle-icon';
 import { css } from '@patternfly/react-styles';
+import { getServiceUnavailableMessage } from './condition-messages';
 
 import '~/shared/components/empty-state/EmptyState.scss';
 
 const ServiceUnavailableState: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const message =
-    searchParams.get('message') ?? 'The required service is not available in this cluster.';
+  const message = getServiceUnavailableMessage(searchParams.get('condition'));
 
   return (
     <EmptyState

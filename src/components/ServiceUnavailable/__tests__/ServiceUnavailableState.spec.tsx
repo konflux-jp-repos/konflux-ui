@@ -33,14 +33,20 @@ describe('ServiceUnavailableState', () => {
     screen.getByText('Go to Overview page');
   });
 
-  it('should render message from query param', () => {
-    useSearchParamsMock.mockReturnValue([
-      new URLSearchParams('message=Kite Service is not available in this cluster.'),
-    ]);
+  it('should render kite message from condition query param', () => {
+    useSearchParamsMock.mockReturnValue([new URLSearchParams('condition=isKiteServiceEnabled')]);
 
     render(<ServiceUnavailableState />);
 
     screen.getByText('Kite Service is not available in this cluster.');
+  });
+
+  it('should render default message for unknown condition query param', () => {
+    useSearchParamsMock.mockReturnValue([new URLSearchParams('condition=unknown-condition')]);
+
+    render(<ServiceUnavailableState />);
+
+    screen.getByText('The required service is not available in this cluster.');
   });
 
   it('should navigate to the overview page', async () => {
