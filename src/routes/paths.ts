@@ -2,6 +2,10 @@ import { buildRoute, type RouteDefinition, RouterParams } from './utils';
 
 type NamespacePath = 'ns';
 type ReleaseMonitorPath = 'releasemonitor';
+type ServiceUnavailablePath = 'service-unavailable';
+
+export const SERVICE_UNAVAILABLE_PATH: RouteDefinition<ServiceUnavailablePath> =
+  buildRoute('service-unavailable');
 
 /* Namespace/Workspace Paths */
 export const NAMESPACE_LIST_PATH: RouteDefinition<NamespacePath> = buildRoute('ns');

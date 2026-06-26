@@ -1,25 +1,34 @@
 import React from 'react';
+import { ensureConditionOnLoader } from '~/feature-flags/utils';
 import { ISSUES_PATH } from '../../paths';
 import issuesRoutes from '../issues';
 
 // Type definitions matching the actual React Router route objects
-type BaseRoute = {
+type ChildBaseRoute = {
   loader?: () => boolean;
-  lazy?: () => Promise<{ Component: React.FunctionComponent<Record<string, never>> }>;
+  lazy?: () => Promise<{ Component: React.ComponentType }>;
   errorElement?: JSX.Element;
 };
 
-type IndexRoute = BaseRoute & {
+type IndexRoute = ChildBaseRoute & {
   index: boolean;
   path?: undefined;
 };
 
-type PathRoute = BaseRoute & {
+type PathRoute = ChildBaseRoute & {
   path: string;
   index?: undefined;
 };
 
 type ChildRoute = IndexRoute | PathRoute;
+
+type MainRoute = {
+  path: string;
+  loader: () => Promise<null>;
+  lazy: () => Promise<{ Component: React.ComponentType }>;
+  errorElement: JSX.Element;
+  children: ChildRoute[];
+};
 
 // Mock the RouteErrorBoundary
 jest.mock('../../RouteErrorBoundary', () => ({
@@ -28,14 +37,16 @@ jest.mock('../../RouteErrorBoundary', () => ({
 
 // Mock the issuesPageLoader
 jest.mock('~/components/Issues', () => ({
-  issuesPageLoader: jest.fn(() => ({ data: 'test-data' })),
+  issuesPageLoader: jest.fn(() => true),
 }));
 
-// Mock ensureFeatureFlagOnLoader so lazy() doesn't throw HttpError(404)
+// Mock ensureConditionOnLoader so loader does not throw redirect
 jest.mock('~/feature-flags/utils', () => ({
   ...jest.requireActual('~/feature-flags/utils'),
-  ensureFeatureFlagOnLoader: jest.fn(),
+  ensureConditionOnLoader: jest.fn(),
 }));
+
+const mockEnsureConditionOnLoader = ensureConditionOnLoader as jest.Mock;
 
 describe('Issues Routes Configuration', () => {
   it('should export an array of routes', () => {
@@ -44,19 +55,28 @@ describe('Issues Routes Configuration', () => {
   });
 
   describe('main issues route', () => {
-    let mainRoute: {
-      path: string;
-      lazy: () => Promise<{ Component: React.FunctionComponent<Record<string, never>> }>;
-      errorElement: JSX.Element;
-      children: ChildRoute[];
-    };
+    let mainRoute: MainRoute;
 
     beforeEach(() => {
-      [mainRoute] = issuesRoutes;
+      mockEnsureConditionOnLoader.mockResolvedValue(undefined);
+      [mainRoute] = issuesRoutes as [MainRoute];
     });
 
     it('should have correct path', () => {
       expect(mainRoute.path).toBe(ISSUES_PATH.path);
+    });
+
+    it('should have loader function', () => {
+      expect(typeof mainRoute.loader).toBe('function');
+    });
+
+    it('should check kite service availability in loader', async () => {
+      await mainRoute.loader();
+
+      expect(mockEnsureConditionOnLoader).toHaveBeenCalledWith(
+        ['isKiteServiceEnabled'],
+        'issues-dashboard',
+      );
     });
 
     it('should have lazy loading function', () => {
@@ -85,9 +105,8 @@ describe('Issues Routes Configuration', () => {
     let overviewRoute: IndexRoute;
 
     beforeEach(() => {
-      const [mainRoute] = issuesRoutes;
-      const [firstChild] = mainRoute.children;
-      // Type assertion: we know the first child is an index route
+      const [route] = issuesRoutes as [MainRoute];
+      const [firstChild] = route.children;
       overviewRoute = firstChild as IndexRoute;
     });
 
@@ -121,9 +140,8 @@ describe('Issues Routes Configuration', () => {
     let listRoute: PathRoute;
 
     beforeEach(() => {
-      const [mainRoute] = issuesRoutes;
-      const [, secondChild] = mainRoute.children;
-      // Type assertion: we know the second child is a path route
+      const [route] = issuesRoutes as [MainRoute];
+      const [, secondChild] = route.children;
       listRoute = secondChild as PathRoute;
     });
 
@@ -155,8 +173,8 @@ describe('Issues Routes Configuration', () => {
 
   describe('route integration', () => {
     it('should use the same loader for both child routes', () => {
-      const [mainRoute] = issuesRoutes;
-      const [firstChild, secondChild] = mainRoute.children;
+      const [route] = issuesRoutes as [MainRoute];
+      const [firstChild, secondChild] = route.children;
       const overviewRoute = firstChild as IndexRoute;
       const listRoute = secondChild as PathRoute;
 
@@ -164,22 +182,23 @@ describe('Issues Routes Configuration', () => {
     });
 
     it('should have error boundaries for all routes', () => {
-      const [mainRoute] = issuesRoutes;
-      const [firstChild, secondChild] = mainRoute.children;
+      const [route] = issuesRoutes as [MainRoute];
+      const [firstChild, secondChild] = route.children;
       const overviewRoute = firstChild as IndexRoute;
       const listRoute = secondChild as PathRoute;
 
-      expect(mainRoute.errorElement).toBeDefined();
+      expect(route.errorElement).toBeDefined();
       expect(overviewRoute.errorElement).toBeDefined();
       expect(listRoute.errorElement).toBeDefined();
     });
 
-    it('should call loader functions without errors', () => {
-      const [mainRoute] = issuesRoutes;
-      const [firstChild, secondChild] = mainRoute.children;
+    it('should call loader functions without errors', async () => {
+      const [route] = issuesRoutes as [MainRoute];
+      const [firstChild, secondChild] = route.children;
       const overviewRoute = firstChild as IndexRoute;
       const listRoute = secondChild as PathRoute;
 
+      await expect(route.loader()).resolves.toBeNull();
       expect(() => overviewRoute.loader?.()).not.toThrow();
       expect(() => listRoute.loader?.()).not.toThrow();
     });

@@ -84,7 +84,7 @@ export const AppSideBar: React.FC<{ isOpen: boolean }> = ({ isOpen }) => {
                 <Link
                   to={namespace ? ISSUES_PATH.createPath({ workspaceName: namespace }) : undefined}
                 >
-                  Issues <FeatureFlagIndicator flags={['issues-dashboard']} />
+                  Issues
                 </Link>
               </NavItem>
             </IfFeature>

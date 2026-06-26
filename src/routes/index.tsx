@@ -20,6 +20,7 @@ import releaseRoutes from './page-routes/release';
 import releaseMonitorRoutes from './page-routes/release-monitor';
 import releaseServiceRoutes from './page-routes/release-service';
 import secretRoutes from './page-routes/secrets';
+import serviceUnavailableRoutes from './page-routes/service-unavailable';
 import snapshotRoutes from './page-routes/snapshots';
 import taskRunRoutes from './page-routes/taskrun';
 import userAccessRoutes from './page-routes/user-access';
@@ -62,6 +63,7 @@ export const router = createBrowserRouter([
       ...taskRunRoutes,
       ...userAccessRoutes,
       ...pipelineRunsPageRoutes,
+      ...serviceUnavailableRoutes,
       // '/ns/:ns',
       //   '/ns/:ns/pipelinerun/:pipelineRun',
       //   '/ns/:ns/pipelinerun/:pipelineRun/logs',
