@@ -161,12 +161,22 @@ export const getDownloadAllLogsCallback = (
       if (steps.length > 0) {
         for (const step of steps) {
           const { url, status } = task.steps[step];
-          const getContentPromise = commonFetchText(
-            url,
+          const fetchOpts =
             isKubearchiveEnabled && task.source === ResourceSource.Archive
               ? { pathPrefix: 'plugins/kubearchive' }
-              : undefined,
-          )
+              : undefined;
+          const getContentPromise = commonFetchText(url, fetchOpts)
+            .catch(async (err) => {
+              // Pod may still be attributed to the cluster after GC — retry archive.
+              if (
+                err?.code === 404 &&
+                isKubearchiveEnabled &&
+                task.source === ResourceSource.Cluster
+              ) {
+                return commonFetchText(url, { pathPrefix: 'plugins/kubearchive' });
+              }
+              throw err;
+            })
             .then((logs) => {
               return `${step.toUpperCase()}\n\n${logs}\n\n`;
             })

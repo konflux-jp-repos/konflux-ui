@@ -2,6 +2,7 @@ import * as React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Base64 } from 'js-base64';
 import { useIsOnFeatureFlag } from '~/feature-flags/hooks';
+import { HttpError } from '~/k8s/error';
 import { KUBEARCHIVE_PATH_PREFIX } from '~/kubearchive/const';
 import { type LogSection } from '~/shared/components/virtualized-log-viewer';
 import { ResourceSource } from '~/types/k8s';
@@ -18,6 +19,49 @@ import LogViewer, { type Props as LogViewerProps } from './LogViewer';
 type LogSources = { [containerName: string]: string };
 
 const WEB_SOCKET_RETRY_COUNT = 5;
+
+const isNotFoundError = (err: unknown): boolean =>
+  err instanceof HttpError ? err.code === 404 : (err as { code?: number })?.code === 404;
+
+const isAbortError = (err: unknown): boolean =>
+  err instanceof Error && err.name === 'AbortError';
+
+const formatLogFetchError = (err: unknown): string =>
+  `\x1b[1;31mLOG FETCH ERROR${err instanceof Error ? `:\n${err.message}` : ''}\x1b[0m\n`;
+
+/**
+ * Fetches terminated container logs. When the pod is still attributed to the
+ * cluster but the /log request 404s (pod GC race / stale cache), retry via
+ * KubeArchive when that feature is enabled. Archive failures are surfaced to
+ * the caller — do not fall back to Tekton Results.
+ */
+const fetchTerminatedContainerLogs = async (
+  watchURL: string,
+  signal: AbortSignal,
+  source: ResourceSource,
+  isKubearchiveEnabled: boolean,
+): Promise<string> => {
+  const useArchivePrefix = isKubearchiveEnabled && source === ResourceSource.Archive;
+  try {
+    return await commonFetchText(watchURL, {
+      signal,
+      ...(useArchivePrefix ? { pathPrefix: KUBEARCHIVE_PATH_PREFIX } : undefined),
+    });
+  } catch (err) {
+    if (
+      isNotFoundError(err) &&
+      isKubearchiveEnabled &&
+      source === ResourceSource.Cluster &&
+      !signal.aborted
+    ) {
+      return commonFetchText(watchURL, {
+        signal,
+        pathPrefix: KUBEARCHIVE_PATH_PREFIX,
+      });
+    }
+    throw err;
+  }
+};
 
 const retryWebSocket = (
   watchURL: string,
@@ -131,28 +175,14 @@ const Logs: React.FC<LogsProps> = ({
         const { signal } = controller;
 
         markFetchStarted();
-        commonFetchText(watchURL, {
-          signal,
-          ...(isKubearchiveEnabled && source === ResourceSource.Archive
-            ? { pathPrefix: KUBEARCHIVE_PATH_PREFIX }
-            : undefined),
-        })
+        fetchTerminatedContainerLogs(watchURL, signal, source, isKubearchiveEnabled)
           .then((res) => appendLog(name, res))
           .catch((err) => {
-            if (err.name !== 'AbortError') {
-              // Gracefully handle empty logs (404) from kubearch, similar to how Tekton Results handles 404
-              // When logs don't exist, both kubearch and Tekton Results return 404
-              if (err?.code === 404) {
-                // Don't append any error message for missing logs - just leave it empty
-                // This matches the behavior of Tekton Results which returns empty logs for 404
-                return;
-              }
-
-              appendLog(
-                name,
-                `\x1b[1;31mLOG FETCH ERROR${err instanceof Error ? `:\n${err.message}` : ''}\x1b[0m\n`,
-              );
+            if (isAbortError(err)) {
+              return;
             }
+            // Surface kubearchive/cluster failures in the viewer — do not fall back to Tekton.
+            appendLog(name, formatLogFetchError(err));
           })
           .finally(markFetchFinished);
 

@@ -470,7 +470,7 @@ describe('Logs', () => {
       });
     });
 
-    it('should gracefully handle 404 errors (empty logs) from kubearch', async () => {
+    it('should display fetch error when kubearchive log fetch returns 404', async () => {
       const terminatedContainer: ContainerStatus = {
         name: 'container1',
         state: { terminated: { exitCode: 0 } },
@@ -489,6 +489,7 @@ describe('Logs', () => {
       };
 
       (containerToLogSourceStatus as jest.Mock).mockReturnValue('terminated');
+      (useIsOnFeatureFlag as jest.Mock).mockReturnValue(true);
       const error404 = Object.assign(new Error('Not Found'), { code: 404 });
       (commonFetchText as jest.Mock).mockRejectedValue(error404);
 
@@ -497,14 +498,111 @@ describe('Logs', () => {
           {...defaultProps}
           resource={resourceWithStatus}
           containers={[{ name: 'container1' }]}
+          source={ResourceSource.Archive}
         />,
       );
 
       expect(commonFetchText as jest.Mock).toHaveBeenCalled();
 
-      // Should NOT show error message for 404 (missing logs) - should remain empty
       await waitFor(() => {
-        expect(getLastSectionsData()).not.toContain('LOG FETCH ERROR');
+        expect(getLastSectionsData()).toContain('LOG FETCH ERROR');
+        expect(getLastSectionsData()).toContain('Not Found');
+      });
+    });
+
+    it('should fall back to kubearchive when cluster log fetch returns 404', async () => {
+      const terminatedContainer: ContainerStatus = {
+        name: 'container1',
+        state: { terminated: { exitCode: 0 } },
+        ready: false,
+        restartCount: 0,
+        image: 'test-image',
+        imageID: 'test-image-id',
+      };
+
+      const resourceWithStatus: PodKind = {
+        ...mockResource,
+        status: {
+          phase: 'Succeeded',
+          containerStatuses: [terminatedContainer],
+        },
+      };
+
+      (containerToLogSourceStatus as jest.Mock).mockReturnValue('terminated');
+      (useIsOnFeatureFlag as jest.Mock).mockReturnValue(true);
+      const error404 = Object.assign(new Error('Not Found'), { code: 404 });
+      (commonFetchText as jest.Mock)
+        .mockRejectedValueOnce(error404)
+        .mockResolvedValueOnce('archived container logs');
+
+      render(
+        <Logs
+          {...defaultProps}
+          resource={resourceWithStatus}
+          containers={[{ name: 'container1' }]}
+          source={ResourceSource.Cluster}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(getLastSectionsData()).toContain('archived container logs');
+      });
+
+      expect(commonFetchText as jest.Mock).toHaveBeenCalledTimes(2);
+      expect(commonFetchText as jest.Mock).toHaveBeenNthCalledWith(
+        1,
+        'http://test-url',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+      expect(commonFetchText as jest.Mock).toHaveBeenNthCalledWith(
+        2,
+        'http://test-url',
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+          pathPrefix: 'plugins/kubearchive',
+        }),
+      );
+    });
+
+    it('should display fetch error when both cluster and kubearchive log fetches return 404', async () => {
+      const terminatedContainer: ContainerStatus = {
+        name: 'container1',
+        state: { terminated: { exitCode: 0 } },
+        ready: false,
+        restartCount: 0,
+        image: 'test-image',
+        imageID: 'test-image-id',
+      };
+
+      const resourceWithStatus: PodKind = {
+        ...mockResource,
+        status: {
+          phase: 'Succeeded',
+          containerStatuses: [terminatedContainer],
+        },
+      };
+
+      (containerToLogSourceStatus as jest.Mock).mockReturnValue('terminated');
+      (useIsOnFeatureFlag as jest.Mock).mockReturnValue(true);
+      const error404 = Object.assign(new Error('Not Found'), { code: 404 });
+      (commonFetchText as jest.Mock).mockRejectedValue(error404);
+
+      render(
+        <Logs
+          {...defaultProps}
+          resource={resourceWithStatus}
+          containers={[{ name: 'container1' }]}
+          source={ResourceSource.Cluster}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(commonFetchText as jest.Mock).toHaveBeenCalledTimes(2);
+      });
+
+      await waitFor(() => {
+        expect(getLastSectionsData()).toContain('LOG FETCH ERROR');
+        expect(getLastSectionsData()).toContain('Not Found');
       });
     });
 
