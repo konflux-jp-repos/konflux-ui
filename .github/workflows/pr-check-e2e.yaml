@@ -1,0 +1,278 @@
+name: PR Check E2E
+
+# Phase 2 of two-phase PR E2E: trusted workflow from the default branch.
+# Triggered after PR Check Gate completes; holds secrets and runs deploy/e2e.
+# Requires this file on main (workflow_run only uses workflows on the default branch).
+on:
+  workflow_run:
+    workflows: ['PR Check Gate']
+    types: [completed]
+
+concurrency:
+  group: pr-check-e2e-${{ github.event.workflow_run.head_branch || github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  authorize:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'pull_request' ||
+       github.event.workflow_run.event == 'merge_group')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: write
+    outputs:
+      pr_number: ${{ steps.auth.outputs.pr_number }}
+      actor: ${{ steps.auth.outputs.actor }}
+      event_action: ${{ steps.auth.outputs.event_action }}
+      head_repository: ${{ steps.auth.outputs.head_repository }}
+      head_sha: ${{ steps.auth.outputs.head_sha }}
+      head_branch: ${{ steps.auth.outputs.head_branch }}
+    steps:
+      - name: Download gate metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pr-check-gate-metadata
+          path: ${{ runner.temp }}/gate-metadata
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Resolve PR context and authorize
+        id: auth
+        env:
+          GITHUB_TOKEN: ${{ secrets.HAC_TEST_GH_TOKEN }}
+          GATE_METADATA_PATH: ${{ runner.temp }}/gate-metadata/metadata.json
+          TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          EVENT_ACTION=$(jq -r '.event_action // empty' "$GATE_METADATA_PATH")
+          PR_NUMBER=$(jq -r '.pr_number // empty' "$GATE_METADATA_PATH")
+          ACTOR=$(jq -r '.actor // empty' "$GATE_METADATA_PATH")
+          META_HEAD_REPO=$(jq -r '.head_repository // empty' "$GATE_METADATA_PATH")
+
+          if [[ -z "$PR_NUMBER" && "$TRIGGER_EVENT" == "pull_request" ]]; then
+            PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" \
+              --jq '[.[] | select(.state == "open")][0].number // empty')
+          fi
+
+          if [[ -z "$ACTOR" && -n "$PR_NUMBER" ]]; then
+            ACTOR=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author --jq '.author.login')
+          fi
+
+          RESOLVED_HEAD_REPO="${HEAD_REPO:-$META_HEAD_REPO}"
+          if [[ -z "$RESOLVED_HEAD_REPO" ]]; then
+            RESOLVED_HEAD_REPO="$REPO"
+          fi
+
+          {
+            echo "pr_number=${PR_NUMBER}"
+            echo "actor=${ACTOR}"
+            echo "event_action=${EVENT_ACTION}"
+            echo "head_repository=${RESOLVED_HEAD_REPO}"
+            echo "head_sha=${HEAD_SHA}"
+            echo "head_branch=${HEAD_BRANCH}"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$TRIGGER_EVENT" == "merge_group" ]]; then
+            echo "Triggered by merge_group — skipping external authorization."
+            exit 0
+          fi
+
+          if [[ -z "$PR_NUMBER" ]]; then
+            echo "### ❌ Cannot run E2E tests — could not resolve PR number" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # New commits invalidate prior ok-to-test approval.
+          if [[ "$EVENT_ACTION" == "synchronize" ]]; then
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label "ok-to-test" || true
+          fi
+
+          WHITELISTED_BOTS=("red-hat-konflux[bot]" "konflux-ci-coder[bot]" "fullsend-ai-coder[bot]")
+          REQUIRED_LABEL_NAME="ok-to-test"
+          PR_LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '.labels[].name')
+
+          for BOT in "${WHITELISTED_BOTS[@]}"; do
+            if [[ "$ACTOR" == "$BOT" ]]; then
+              echo "PR author is $BOT, skipping further checks."
+              exit 0
+            fi
+          done
+
+          if [[ "$PR_LABELS" == *$REQUIRED_LABEL_NAME* ]]; then
+            echo "PR has '$REQUIRED_LABEL_NAME' label, skipping further checks."
+            exit 0
+          fi
+
+          authorized=false
+          if api_err=$(mktemp); then
+            if role=$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" \
+              --jq '.role_name' 2>"$api_err"); then
+              case "$role" in
+                admin|maintain|write)
+                  authorized=true
+                  echo "PR author ${ACTOR} has repository role '${role}'. Running E2E tests."
+                  ;;
+                *)
+                  echo "PR author ${ACTOR} has repository role '${role}' (insufficient without ok-to-test)."
+                  ;;
+              esac
+            else
+              echo "Collaborator permission API returned no write access for ${ACTOR}: $(cat "$api_err")"
+            fi
+            rm -f "$api_err"
+          else
+            echo "::warning::Failed to create temp file for permission check of ${ACTOR}"
+          fi
+
+          if [[ "$authorized" == "true" ]]; then
+            exit 0
+          fi
+
+          ERROR_SUMMARY=$(cat <<EOF
+
+          ### ❌ Cannot run E2E tests - at least one of the following conditions must be met:
+          * PR author is a whitelisted bot (${WHITELISTED_BOTS[*]})
+          * PR has label '$REQUIRED_LABEL_NAME'
+          * PR author has write (or higher) access on this repository
+          EOF
+          )
+          echo "$ERROR_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          echo "$ERROR_SUMMARY"
+          exit 1
+
+  deploy-konflux-ui:
+    needs: authorize
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TARGET_BRANCH: main
+      SOURCE_BRANCH: ${{ needs.authorize.outputs.head_branch }}
+      PR_NUMBER: ${{ needs.authorize.outputs.pr_number }}
+      HEAD_SHA: ${{ needs.authorize.outputs.head_sha }}
+      FORKED_REPO_URL: https://github.com/${{ needs.authorize.outputs.head_repository }}.git
+      BASE_REPO_URL: https://github.com/${{ github.repository }}.git
+      COMMIT_INFO_SHA: ${{ needs.authorize.outputs.head_sha }}
+      COMMIT_INFO_BRANCH: ${{ needs.authorize.outputs.head_branch }}
+      COMMIT_INFO_AUTHOR: ${{ needs.authorize.outputs.actor }}
+      CYPRESS_GH_TOKEN: ${{ secrets.HAC_TEST_GH_TOKEN }}
+      GH_APP_ID: ${{ secrets.GH_APP_ID }}
+      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+      GH_APP_WEBHOOK_SECRET: ${{ secrets.GH_APP_WEBHOOK_SECRET }}
+      QUAY_TEST_ORG: ${{ secrets.QUAY_TEST_ORG }}
+      QUAY_TOKEN_TEST: ${{ secrets.QUAY_TOKEN_TEST }}
+      SMEE_URL: ${{ secrets.SMEE_URL }}
+      CYPRESS_USERNAME: ${{ secrets.CYPRESS_USERNAME }}
+      CYPRESS_PASSWORD: ${{ secrets.CYPRESS_PASSWORD }}
+      CYPRESS_KONFLUX_BASE_URL: 'https://localhost:9443'
+      CYPRESS_PROJECT_ID: ${{ secrets.PROJECT_ID }}
+      CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      JOB_TYPE: 'on-pr'
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.authorize.outputs.head_repository }}
+          ref: ${{ needs.authorize.outputs.head_sha }}
+
+      - name: Set commit message
+        env:
+          GITHUB_TOKEN: ${{ secrets.HAC_TEST_GH_TOKEN }}
+          PR_NUMBER: ${{ needs.authorize.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${PR_NUMBER}" ]]; then
+            TITLE=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json title --jq '.title')
+            echo "COMMIT_INFO_MESSAGE=${TITLE}" >> "$GITHUB_ENV"
+          else
+            echo "COMMIT_INFO_MESSAGE=merge_group" >> "$GITHUB_ENV"
+          fi
+
+      - name: Enable Corepack 📦
+        run: corepack enable
+
+      - name: Disc space stats
+        run: |
+          set -x
+          df -h --total
+          free -m
+
+      - name: Redirect Cypress Cache to /mnt
+        run: |
+          sudo mkdir -p /mnt/cypress_cache
+          sudo chown -R runner:docker /mnt/cypress_cache
+          mkdir -p ~/.cache
+          ln -s /mnt/cypress_cache ~/.cache/Cypress
+
+      - name: Force Docker to /mnt
+        run: |
+          sudo systemctl stop docker.socket
+          sudo systemctl stop docker
+          sudo mkdir -p /mnt/docker
+          sudo mkdir -p /etc/systemd/system/docker.service.d
+          printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --data-root=/mnt/docker -H fd://' | sudo tee /etc/systemd/system/docker.service.d/override.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start docker
+
+      - name: Move npm/yarn cache to /mnt
+        run: |
+          sudo mkdir -p /mnt/npm_cache
+          sudo chown -R runner:docker /mnt/npm_cache
+          sudo npm config set cache /mnt/npm_cache --global
+          sudo mkdir -p /mnt/yarn_cache
+          sudo chown -R runner:docker /mnt/yarn_cache
+          export YARN_CACHE_FOLDER=/mnt/yarn_cache
+
+      - name: Redirect Podman Storage to /mnt
+        run: |
+          sudo mkdir -p /mnt/podman_storage
+          sudo chown -R runner:docker /mnt/podman_storage
+          mkdir -p ~/.config/containers
+          cat <<EOF > ~/.config/containers/storage.conf
+          [storage]
+          driver = "overlay"
+          graphroot = "/mnt/podman_storage"
+          EOF
+          podman info --format '{{.Store.GraphRoot}}'
+
+      - name: Deploy konflux-ci
+        id: pr-check-action
+        uses: ./.github/actions/konflux-ui-deploy-test
+        with:
+          job-type: ${{ env.JOB_TYPE }}
+
+      - name: Disc space stats after deploy
+        run: |
+          set -x
+          df -h --total
+          free -m
+          kubectl describe nodes
+
+      - name: Konflux-ui e2e test
+        uses: ./.github/actions/konflux-ui-e2e-test
+
+      - name: Disc space stats after e2e test
+        if: ${{ always() }}
+        run: |
+          set -x
+          df -h --total
+          free -m
+          kubectl describe nodes
+          du -h / --max-depth=2 2>/dev/null | sort -hr | head -n 10
+
+      - name: Upload e2e coverage to Codecov
+        if: ${{ always() && env.CODECOV_TOKEN != '' }}
+        run: ./pr_check.sh upload-coverage
+
+      - name: Generate error logs
+        if: ${{ always() }}
+        uses: ./.github/actions/generate-error-logs

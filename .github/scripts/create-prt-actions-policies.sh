@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Create scoped repository Actions event policies that allow pull_request_target
-# for the workflows that still need it after GitHub's 2026-12-02 default block.
+# Create a scoped repository Actions event policy that allows pull_request_target
+# only for Fullsend after GitHub's 2026-12-02 default block.
+#
+# Team-owned PR CI (title check, E2E) uses pull_request + workflow_run and does not
+# need pull_request_target.
 #
 # Requires: gh auth with admin on konflux-ci/konflux-ui (or repo admin PAT in GH_TOKEN).
 # Usage: ./.github/scripts/create-prt-actions-policies.sh
@@ -57,21 +60,11 @@ gh api "repos/${REPO}/actions/policies" \
 echo
 
 # Event rules are allowlists: include every event the workflow declares, not only PRT.
-create_policy \
-  "Allow pull_request_target for pr-check" \
-  ".github/workflows/pr-check.yaml" \
-  pull_request_target merge_group
-
-create_policy \
-  "Allow pull_request_target for pr-title-check" \
-  ".github/workflows/pr-title-check.yaml" \
-  pull_request_target
-
+# Fullsend shim is upstream-managed and still uses pull_request_target.
 create_policy \
   "Allow pull_request_target for fullsend" \
   ".github/workflows/fullsend.yaml" \
   issues issue_comment pull_request_target pull_request_review
 
 echo "Done. Verify under Settings → Actions → Policies and Policy insights."
-echo "Update tracking spreadsheet when confirmed:"
-echo "  https://docs.google.com/spreadsheets/d/1kR_ijaDl04BZHpTCAbY750ixfmLc52460SWM7ZCvyrs/"
+echo "If older policies still allow PRT for pr-check or pr-title-check, delete them."

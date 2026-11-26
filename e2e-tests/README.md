@@ -181,32 +181,43 @@ Test automation allows us to test early in the process and discover bugs before 
 
 ### PR checks
 
-Cypress E2E tests run on pull requests using a [GitHub Action](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-check.yaml). The workflow uses `pull_request_target` so it can access repository secrets (Cypress, Quay, GitHub App, etc.) for fork and same-repo PRs. Starting 2026-12-02, GitHub blocks `pull_request_target` by default on public repositories unless a scoped [Actions event policy](https://docs.github.com/en/actions/how-tos/administer/control-workflow-execution) allows it — apply the policies with [`.github/scripts/create-prt-actions-policies.sh`](../.github/scripts/create-prt-actions-policies.sh) (repo admin required). The same script allowlists `.github/workflows/pr-title-check.yaml` and `.github/workflows/fullsend.yaml` (Fullsend-managed shim; do not hand-edit — coordinate upstream if PRT usage changes).
+Cypress E2E tests use a two-phase GitHub Actions flow (no `pull_request_target` for team-owned PR CI):
 
-The job installs Konflux from a main branch and Konflux UI from a PR. It runs tests, gathers logs, and allows users to download them directly from the GitHub Action Summary page. Retriggering the job is possible either by pushing a commit to the branch or trigger it directly in the GitHub Action Summary page by `Re-run jobs` button.
+1. **[PR Check Gate](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-check.yaml)** (`pull_request` / `merge_group`) — secretless; uploads metadata that a PR run is ready.
+2. **[PR Check E2E](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-check-e2e.yaml)** (`workflow_run`) — trusted workflow from the default branch; authorizes, then deploys and runs Cypress with repository secrets.
 
-Authorization is fail-closed before the secret-bearing deploy/e2e job. At least one of the following must be true:
+PR title validation follows the same pattern: [PR Title Check](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-title-check.yaml) fails the check on `pull_request`; [PR Title Check Comment](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-title-check-comment.yaml) posts the failure comment via `workflow_run` (needed for fork PRs).
+
+`.github/workflows/fullsend.yaml` still uses `pull_request_target` (upstream-managed). Allowlist only that workflow with [`.github/scripts/create-prt-actions-policies.sh`](../.github/scripts/create-prt-actions-policies.sh) if needed after GitHub's 2026-12-02 default PRT block.
+
+The E2E job installs Konflux from main and builds Konflux UI from the PR into a local kind image (not pushed). Logs are available from the GitHub Action Summary. Retrigger by pushing a commit, adding/re-adding `ok-to-test`, or using `Re-run jobs` on the E2E workflow.
+
+Authorization is fail-closed in Phase 2 before the secret-bearing deploy/e2e job. At least one of the following must be true:
 
 * PR author is a whitelisted bot (`red-hat-konflux[bot]`, `konflux-ci-coder[bot]`, `fullsend-ai-coder[bot]`)
 * PR has the `ok-to-test` label (required for external contributors; the label is removed on each `synchronize` so new commits need re-approval)
 * PR author has write (or higher) collaborator access on the repository
 
 > [!IMPORTANT]
-> The direct changes in the GitHub Action file `pr-check.yaml` won't be executed in a PR - that's intended due to security reasons. If you do change in this file, you should test it in your fork.
->
-> Under `pull_request_target`, the workflow file runs from the **base** branch (usually `main`), not from the PR head. The PR head is only checked out in the gated deploy/e2e job after authorization succeeds.
+> Phase 2 (`workflow_run`) only uses workflow files from the **default branch**. Changes to `pr-check-e2e.yaml` or related commenting workflows must land on `main` before they take effect. Gate / title Phase 1 workflows follow the PR's workflow revision like other `pull_request` checks.
 >
 > ```
+> # Phase 1
 > on:
->   pull_request_target:
->     types: [opened, synchronize, reopened, labeled]
+>   pull_request:
+>     types: [opened, synchronize, reopened, labeled, unlabeled]
+> # Phase 2
+> on:
+>   workflow_run:
+>     workflows: ['PR Check Gate']
+>     types: [completed]
 > ```
 
 The workflow is separated into the actions files within `.github/actions` directory. Each action is a composite action, which makes it reusable across multiple workflows. This way it's also visible as separated steps and is easier for debugging.
 
 The job installs Konflux from the konflux-ci main branch. Konflux UI with all the changes introduced in a PR is build into an image which is deployed on local a kind cluster (image is not pushed anywhere).
 
-The test step executes `pr_check.sh` file which does the tests setup and runs tests. Changes made in this bash file are already propagated to the PR check run, so they can be tested directly by the PR check job. If the Containerfile is changed, the image is rebuilt (not pushed). Environment variables are set and tests are run with the test code mounted from the PR to ensure it contains a fresh code.
+The test step executes `pr_check.sh` file which does the tests setup and runs tests. Changes made in this bash file are already propagated when the PR head is checked out in Phase 2. If the Containerfile is changed, the image is rebuilt (not pushed). Environment variables are set and tests are run with the test code from the PR.
 
 #### Konflux integration pipeline
 
