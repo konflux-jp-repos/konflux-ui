@@ -181,14 +181,20 @@ Test automation allows us to test early in the process and discover bugs before 
 
 ### PR checks
 
-Cypress E2E tests run on pull requests using a [GitHub Action](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-check.yaml). To be able to run the PR check job, you have to be a public member of `konflux-ci` organization.
+Cypress E2E tests run on pull requests using a [GitHub Action](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-check.yaml). The workflow uses `pull_request_target` so it can access repository secrets (Cypress, Quay, GitHub App, etc.) for fork and same-repo PRs. Starting 2026-12-02, GitHub blocks `pull_request_target` by default on public repositories unless a scoped [Actions event policy](https://docs.github.com/en/actions/how-tos/administer/control-workflow-execution) allows it — apply the policies with [`.github/scripts/create-prt-actions-policies.sh`](../.github/scripts/create-prt-actions-policies.sh) (repo admin required). The same script allowlists `.github/workflows/pr-title-check.yaml` and `.github/workflows/fullsend.yaml` (Fullsend-managed shim; do not hand-edit — coordinate upstream if PRT usage changes).
 
 The job installs Konflux from a main branch and Konflux UI from a PR. It runs tests, gathers logs, and allows users to download them directly from the GitHub Action Summary page. Retriggering the job is possible either by pushing a commit to the branch or trigger it directly in the GitHub Action Summary page by `Re-run jobs` button.
+
+Authorization is fail-closed before the secret-bearing deploy/e2e job. At least one of the following must be true:
+
+* PR author is a whitelisted bot (`red-hat-konflux[bot]`, `konflux-ci-coder[bot]`, `fullsend-ai-coder[bot]`)
+* PR has the `ok-to-test` label (required for external contributors; the label is removed on each `synchronize` so new commits need re-approval)
+* PR author has write (or higher) collaborator access on the repository
 
 > [!IMPORTANT]
 > The direct changes in the GitHub Action file `pr-check.yaml` won't be executed in a PR - that's intended due to security reasons. If you do change in this file, you should test it in your fork.
 >
-> This feature is caused by a trigger which is set as:
+> Under `pull_request_target`, the workflow file runs from the **base** branch (usually `main`), not from the PR head. The PR head is only checked out in the gated deploy/e2e job after authorization succeeds.
 >
 > ```
 > on:

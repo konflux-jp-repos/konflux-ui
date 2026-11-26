@@ -34,8 +34,11 @@ jobs:
     if: ${{ github.event_name != 'merge_group' }}
     runs-on: ubuntu-latest
     steps:
+      # Fail-closed gate before the secret-bearing deploy/e2e job (no PR checkout here).
       - name: Checking rights to run a PR checks
         run: |
+          set -euo pipefail
+
           if [ "${{ github.event_name }}" != 'pull_request_target' ]; then
             echo "The workflow is not triggered from PR, but ${{ github.event_name }} - skipping further checks."
             exit 0
@@ -44,8 +47,7 @@ jobs:
           WHITELISTED_BOTS=("red-hat-konflux[bot]" "konflux-ci-coder[bot]" "fullsend-ai-coder[bot]")
           REQUIRED_LABEL_NAME="ok-to-test"
 
-          ORG="${{ github.repository_owner }}"
-          PR_AUTHOR=$(jq --raw-output .pull_request.user.login $GITHUB_EVENT_PATH)
+          PR_AUTHOR=$(jq --raw-output .pull_request.user.login "$GITHUB_EVENT_PATH")
           PR_LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '.labels[].name')
 
           for BOT in "${WHITELISTED_BOTS[@]}"; do
@@ -60,23 +62,41 @@ jobs:
             exit 0
           fi
 
-          ALLOWED_USERS=("Katka92" "rrosatti" "janaki29" "sahil143" "testcara" "milantaky" "StanislavJochman" "JoaoPedroPP" "abhinandan13jan" "marcin-michal")
-          for author in "${ALLOWED_USERS[@]}"; do
-            if [[ "$author" == "$PR_AUTHOR" ]]; then
-              echo "PR author is in ALLOWED_USERS list. Running E2E tests."
-              exit 0
+          # Collaborator permission API (admin|maintain|write), same idea as fullsend.yaml.
+          authorized=false
+          if api_err=$(mktemp); then
+            if role=$(gh api "repos/${REPO}/collaborators/${PR_AUTHOR}/permission" \
+              --jq '.role_name' 2>"$api_err"); then
+              case "$role" in
+                admin|maintain|write)
+                  authorized=true
+                  echo "PR author ${PR_AUTHOR} has repository role '${role}'. Running E2E tests."
+                  ;;
+                *)
+                  echo "PR author ${PR_AUTHOR} has repository role '${role}' (insufficient without ok-to-test)."
+                  ;;
+              esac
+            else
+              echo "Collaborator permission API returned no write access for ${PR_AUTHOR}: $(cat "$api_err")"
             fi
-          done
+            rm -f "$api_err"
+          else
+            echo "::warning::Failed to create temp file for permission check of ${PR_AUTHOR}"
+          fi
+
+          if [[ "$authorized" == "true" ]]; then
+            exit 0
+          fi
 
           ERROR_SUMMARY=$(cat <<EOF
 
           ### ❌ Cannot run E2E tests - at least one of the following conditions must be met:
           * PR author is a whitelisted bot (${WHITELISTED_BOTS[*]})
           * PR has label '$REQUIRED_LABEL_NAME'
-          * PR author is a konflux-ui developer (listed in ALLOWED_USERS in this script)
+          * PR author has write (or higher) access on this repository
           EOF
           )
-          echo "$ERROR_SUMMARY" >> $GITHUB_STEP_SUMMARY
+          echo "$ERROR_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
           echo "$ERROR_SUMMARY"
 
           exit 1
