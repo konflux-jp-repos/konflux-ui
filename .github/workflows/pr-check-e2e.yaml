@@ -52,72 +52,119 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Sticky approval comments are only trusted when authored by this token's account.
+          APPROVAL_WRITER_ID=$(gh api user --jq '.id')
           APPROVAL_MARKER='<!-- ok-to-test-sha:'
+          REQUIRED_LABEL_NAME="ok-to-test"
 
-          get_approved_sha() {
-            local pr_number="$1"
-            local body
-            body=$(gh api --paginate "repos/${REPO}/issues/${pr_number}/comments" \
-              --jq "[.[] | select(.body != null and (.body | contains(\"${APPROVAL_MARKER}\"))) | .body] | last // empty")
-            if [[ -z "$body" ]]; then
-              printf ''
-              return
-            fi
-            printf '%s\n' "$body" | sed -n 's/.*<!-- ok-to-test-sha: *\([a-f0-9]\{40\}\) *-->.*/\1/p' | tail -n1
+          has_write_access() {
+            local login="$1"
+            local role
+            role=$(gh api "repos/${REPO}/collaborators/${login}/permission" --jq '.role_name' 2>/dev/null || true)
+            case "$role" in
+              admin|maintain|write) return 0 ;;
+              *) return 1 ;;
+            esac
           }
 
-          store_approved_sha() {
+          # Only comments from APPROVAL_WRITER_ID; body text alone is never enough.
+          trusted_approval_comment() {
+            local pr_number="$1"
+            gh api --paginate "repos/${REPO}/issues/${pr_number}/comments" \
+              --jq "[.[] | select(.user.id == ${APPROVAL_WRITER_ID} and .body != null and (.body | contains(\"${APPROVAL_MARKER}\")))]" \
+              | jq 'last // empty'
+          }
+
+          get_approval() {
+            local pr_number="$1"
+            local comment body
+            comment=$(trusted_approval_comment "$pr_number")
+            if [[ -z "$comment" || "$comment" == "null" ]]; then
+              echo ""
+              return
+            fi
+            body=$(jq -r '.body // empty' <<<"$comment")
+            if [[ -z "$body" ]]; then
+              echo ""
+              return
+            fi
+            printf '%s\n' "$body" | sed -n 's/.*<!-- ok-to-test-sha: *\([a-f0-9]\{40\}\) event: *\([0-9][0-9]*\) *-->.*/\1 \2/p' | tail -n1
+          }
+
+          store_approval() {
             local pr_number="$1"
             local head_sha="$2"
-            local body="ok-to-test approved for \`${head_sha}\`. Re-add the label after new pushes.
+            local event_id="$3"
+            local body comment comment_id
+            body="ok-to-test approved for \`${head_sha}\` (label event ${event_id}). Re-add the label after new pushes.
 
-          ${APPROVAL_MARKER} ${head_sha} -->"
-            local comment_id
-            comment_id=$(gh api --paginate "repos/${REPO}/issues/${pr_number}/comments" \
-              --jq "[.[] | select(.body != null and (.body | contains(\"${APPROVAL_MARKER}\)))] | last | .id // empty")
-            if [[ -n "$comment_id" ]]; then
+          ${APPROVAL_MARKER} ${head_sha} event: ${event_id} -->"
+            comment=$(trusted_approval_comment "$pr_number")
+            comment_id=$(jq -r '.id // empty' <<<"${comment:-null}")
+            if [[ -n "$comment_id" && "$comment_id" != "null" ]]; then
               gh api -X PATCH "repos/${REPO}/issues/comments/${comment_id}" -f body="$body" >/dev/null
             else
               gh api -X POST "repos/${REPO}/issues/${pr_number}/comments" -f body="$body" >/dev/null
             fi
-            echo "Stored ok-to-test approval for ${head_sha}."
+            echo "Stored ok-to-test approval for ${head_sha} (event ${event_id})."
+          }
+
+          # Latest ok-to-test labeling from GitHub (trusted); never from the gate artifact.
+          latest_label_event() {
+            local pr_number="$1"
+            gh api --paginate "repos/${REPO}/issues/${pr_number}/events" \
+              --jq "[.[] | select(.event == \"labeled\" and .label.name == \"${REQUIRED_LABEL_NAME}\")]" \
+              | jq 'last // empty'
           }
 
           ok_to_test_covers_head() {
             local pr_number="$1"
             local head_sha="$2"
-            local event_action="$3"
-            local label_name="$4"
-            local required_label="$5"
 
-            if [[ "$event_action" == "labeled" && "$label_name" == "$required_label" ]]; then
-              store_approved_sha "$pr_number" "$head_sha"
-              return 0
-            fi
-
-            local approved_sha
-            approved_sha=$(get_approved_sha "$pr_number")
-            if [[ -z "$approved_sha" ]]; then
-              echo "No stored ok-to-test approval SHA for PR #${pr_number}."
+            local label_event event_id labeler stored stored_sha stored_event_id
+            label_event=$(latest_label_event "$pr_number")
+            if [[ -z "$label_event" || "$label_event" == "null" ]]; then
+              echo "No '${REQUIRED_LABEL_NAME}' labeled event for PR #${pr_number}."
               return 1
             fi
-            if [[ "$approved_sha" != "$head_sha" ]]; then
-              echo "Stored ok-to-test SHA ${approved_sha} does not match head ${head_sha}; re-add the label."
+            event_id=$(jq -r '.id // empty' <<<"$label_event")
+            labeler=$(jq -r '.actor.login // empty' <<<"$label_event")
+            if [[ -z "$event_id" || -z "$labeler" ]]; then
+              echo "Incomplete '${REQUIRED_LABEL_NAME}' labeled event for PR #${pr_number}."
               return 1
             fi
-            echo "Stored ok-to-test SHA matches head ${head_sha}."
+
+            stored=$(get_approval "$pr_number")
+            stored_sha=$(awk '{print $1}' <<<"$stored")
+            stored_event_id=$(awk '{print $2}' <<<"$stored")
+
+            if [[ -n "$stored_event_id" && "$stored_event_id" == "$event_id" ]]; then
+              if [[ "$stored_sha" == "$head_sha" ]]; then
+                echo "Trusted approval matches head ${head_sha} (event ${event_id})."
+                return 0
+              fi
+              echo "Approval event ${event_id} is for ${stored_sha}, not head ${head_sha}; re-add the label."
+              return 1
+            fi
+
+            # New maintainer labeling (API event id changed) → record this PR head SHA.
+            if ! has_write_access "$labeler"; then
+              echo "Labeler ${labeler} lacks write access; not creating approval."
+              return 1
+            fi
+            store_approval "$pr_number" "$head_sha" "$event_id"
             return 0
           }
 
-          EVENT_ACTION=$(jq -r '.event_action // empty' "$GATE_METADATA_PATH")
-          LABEL_NAME=$(jq -r '.label_name // empty' "$GATE_METADATA_PATH")
+          # Gate artifact is a lookup hint only (e.g. pr_number). Never trust its
+          # event_action / label_name to create or refresh approval.
           PR_NUMBER_HINT=$(jq -r '.pr_number // empty' "$GATE_METADATA_PATH")
 
           if [[ "$TRIGGER_EVENT" == "merge_group" ]]; then
             {
               echo "pr_number="
               echo "actor="
-              echo "event_action=${EVENT_ACTION}"
+              echo "event_action="
               echo "head_repository=${HEAD_REPO:-$REPO}"
               echo "head_sha=${HEAD_SHA}"
               echo "head_branch=${HEAD_BRANCH}"
@@ -153,14 +200,13 @@ jobs:
           {
             echo "pr_number=${PR_NUMBER}"
             echo "actor=${ACTOR}"
-            echo "event_action=${EVENT_ACTION}"
+            echo "event_action="
             echo "head_repository=${RESOLVED_HEAD_REPO}"
             echo "head_sha=${HEAD_SHA}"
             echo "head_branch=${HEAD_BRANCH}"
           } >> "$GITHUB_OUTPUT"
 
           WHITELISTED_BOTS=("red-hat-konflux[bot]" "konflux-ci-coder[bot]" "fullsend-ai-coder[bot]")
-          REQUIRED_LABEL_NAME="ok-to-test"
 
           for BOT in "${WHITELISTED_BOTS[@]}"; do
             if [[ "$ACTOR" == "$BOT" ]]; then
@@ -170,43 +216,24 @@ jobs:
           done
 
           if [[ "$PR_LABELS" == *$REQUIRED_LABEL_NAME* ]]; then
-            if ok_to_test_covers_head "$PR_NUMBER" "$HEAD_SHA" "$EVENT_ACTION" "$LABEL_NAME" "$REQUIRED_LABEL_NAME"; then
+            if ok_to_test_covers_head "$PR_NUMBER" "$HEAD_SHA"; then
               echo "PR has '${REQUIRED_LABEL_NAME}' approved for head ${HEAD_SHA}. Running E2E tests."
               exit 0
             fi
             echo "PR has '${REQUIRED_LABEL_NAME}', but approval does not match head ${HEAD_SHA}."
           fi
 
-          authorized=false
-          if api_err=$(mktemp); then
-            if role=$(gh api "repos/${REPO}/collaborators/${ACTOR}/permission" \
-              --jq '.role_name' 2>"$api_err"); then
-              case "$role" in
-                admin|maintain|write)
-                  authorized=true
-                  echo "PR author ${ACTOR} has repository role '${role}'. Running E2E tests."
-                  ;;
-                *)
-                  echo "PR author ${ACTOR} has repository role '${role}' (insufficient without ok-to-test)."
-                  ;;
-              esac
-            else
-              echo "Collaborator permission API returned no write access for ${ACTOR}: $(cat "$api_err")"
-            fi
-            rm -f "$api_err"
-          else
-            echo "::warning::Failed to create temp file for permission check of ${ACTOR}"
-          fi
-
-          if [[ "$authorized" == "true" ]]; then
+          if has_write_access "$ACTOR"; then
+            echo "PR author ${ACTOR} has write (or higher) access. Running E2E tests."
             exit 0
           fi
+          echo "PR author ${ACTOR} lacks write access without a matching ok-to-test approval."
 
           ERROR_SUMMARY=$(cat <<EOF
 
           ### ❌ Cannot run E2E tests - at least one of the following conditions must be met:
           * PR author is a whitelisted bot (${WHITELISTED_BOTS[*]})
-          * PR has label '$REQUIRED_LABEL_NAME' applied for the current head commit (re-add after new pushes)
+          * PR has label '$REQUIRED_LABEL_NAME' approved for the current head commit (re-add after new pushes)
           * PR author has write (or higher) access on this repository
           EOF
           )

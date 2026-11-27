@@ -193,7 +193,7 @@ The secretless `build-candidate` job builds the PR/merge UI image and uploads th
 Authorization is fail-closed in Phase 2 before the secret-bearing deploy/e2e job. At least one of the following must be true:
 
 * PR author is a whitelisted bot (`red-hat-konflux[bot]`, `konflux-ci-coder[bot]`, `fullsend-ai-coder[bot]`)
-* PR has the `ok-to-test` label **approved for the current head SHA** (required for external contributors). On label add, Phase 2 stores that head SHA in a sticky PR comment and later runs only when the stored SHA matches the current PR head. New pushes change the head SHA, so the prior approval no longer matches — remove and re-add `ok-to-test` after pushing.
+* PR has the `ok-to-test` label **approved for the current head SHA** (required for external contributors). Phase 2 records approval only from a trusted GitHub `labeled` event by a write collaborator (never from gate artifact `event_action` / `label_name`), storing that PR head SHA in a sticky comment authored by the approval token account. Later runs accept that comment only from that account’s stable user ID, and only when the stored SHA and label-event ID still match. New pushes leave the old event bound to the old SHA — remove and re-add `ok-to-test` after pushing.
 * PR author has write (or higher) collaborator access on the repository
 
 > [!IMPORTANT]
