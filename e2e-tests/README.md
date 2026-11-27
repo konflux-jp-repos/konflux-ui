@@ -184,11 +184,11 @@ Test automation allows us to test early in the process and discover bugs before 
 Cypress E2E tests use a two-phase GitHub Actions flow (no `pull_request_target` for team-owned PR CI):
 
 1. **[PR Check Gate](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-check.yaml)** (`pull_request` / `merge_group`) — secretless; uploads metadata that a PR run is ready.
-2. **[PR Check E2E](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-check-e2e.yaml)** (`workflow_run`) — trusted workflow from the default branch; authorizes, then deploys and runs Cypress with repository secrets.
+2. **[PR Check E2E](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-check-e2e.yaml)** (`workflow_run`) — trusted workflow from the default branch; authorizes, builds the candidate UI in a secretless job, then deploys (credentials + `konflux-ui-deploy-test` from the base revision only) and runs Cypress.
 
 PR title validation follows the same pattern: [PR Title Check](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-title-check.yaml) fails the check on `pull_request`; [PR Title Check Comment](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-title-check-comment.yaml) posts the failure comment via `workflow_run` (needed for fork PRs).
 
-The E2E job installs Konflux from main and builds Konflux UI from the PR into a local kind image (not pushed). Logs are available from the GitHub Action Summary. Retrigger by pushing a commit, adding/re-adding `ok-to-test` for that commit, or using `Re-run jobs` on the E2E workflow.
+The secretless `build-candidate` job builds the PR/merge UI image. The credential-bearing `deploy-konflux-ui` job checks out the default-branch revision (so PR/merge-group changes to `.github/actions/konflux-ui-deploy-test` cannot run there), loads the prebuilt image, deploys Konflux, and runs Cypress. Logs are available from the GitHub Action Summary. Retrigger by pushing a commit, adding/re-adding `ok-to-test` for that commit, or using `Re-run jobs` on the E2E workflow.
 
 Authorization is fail-closed in Phase 2 before the secret-bearing deploy/e2e job. At least one of the following must be true:
 

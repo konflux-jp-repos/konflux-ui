@@ -26,6 +26,13 @@ build_ui_image() {
         -f Dockerfile.instrumented .
 
     podman image save -o konflux-ui.tar ${KONFLUX_UI_IMAGE_REF}
+
+    # Secretless PR builds save the archive for a later trusted deploy job.
+    if [[ "${SKIP_KIND_LOAD:-}" == "true" ]]; then
+        echo "Skipping kind load (SKIP_KIND_LOAD=true); left konflux-ui.tar in place"
+        return 0
+    fi
+
     kind load image-archive konflux-ui.tar -n konflux
 
     # increase memory on device to avoid OOM killed pods during EC check

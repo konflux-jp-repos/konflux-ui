@@ -187,8 +187,75 @@ jobs:
           echo "$ERROR_SUMMARY"
           exit 1
 
-  deploy-konflux-ui:
+  # Secretless: build candidate UI from PR/merge head. Never receives repository secrets.
+  build-candidate:
     needs: authorize
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TARGET_BRANCH: main
+      SOURCE_BRANCH: ${{ needs.authorize.outputs.head_branch }}
+      PR_NUMBER: ${{ needs.authorize.outputs.pr_number }}
+      HEAD_SHA: ${{ needs.authorize.outputs.head_sha }}
+      FORKED_REPO_URL: https://github.com/${{ needs.authorize.outputs.head_repository }}.git
+      BASE_REPO_URL: https://github.com/${{ github.repository }}.git
+      JOB_TYPE: 'on-pr'
+      SKIP_KIND_LOAD: 'true'
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.authorize.outputs.head_repository }}
+          ref: ${{ needs.authorize.outputs.head_sha }}
+
+      - name: Enable Corepack 📦
+        run: corepack enable
+
+      - name: Force Docker to /mnt
+        run: |
+          sudo systemctl stop docker.socket
+          sudo systemctl stop docker
+          sudo mkdir -p /mnt/docker
+          sudo mkdir -p /etc/systemd/system/docker.service.d
+          printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --data-root=/mnt/docker -H fd://' | sudo tee /etc/systemd/system/docker.service.d/override.conf
+          sudo systemctl daemon-reload
+          sudo systemctl start docker
+
+      - name: Redirect Podman Storage to /mnt
+        run: |
+          sudo mkdir -p /mnt/podman_storage
+          sudo chown -R runner:docker /mnt/podman_storage
+          mkdir -p ~/.config/containers
+          cat <<EOF > ~/.config/containers/storage.conf
+          [storage]
+          driver = "overlay"
+          graphroot = "/mnt/podman_storage"
+          EOF
+          podman info --format '{{.Store.GraphRoot}}'
+
+      - name: Build candidate UI image
+        run: ./pr_check.sh build
+
+      - name: Upload candidate UI image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: konflux-ui-image
+          path: konflux-ui.tar
+          retention-days: 1
+
+      - name: Upload candidate e2e-tests
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: candidate-e2e-tests
+          path: e2e-tests
+          retention-days: 1
+
+  # Credential-bearing: deploy from trusted default-branch revision only.
+  # Checkout never uses the candidate SHA, so PR/merge-group edits to
+  # konflux-ui-deploy-test cannot run here (uses: ./.github/actions/... is from base).
+  deploy-konflux-ui:
+    needs: [authorize, build-candidate]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -217,11 +284,23 @@ jobs:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
       JOB_TYPE: 'on-pr'
     steps:
-      - name: Checkout PR head
+      - name: Checkout trusted base revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ needs.authorize.outputs.head_repository }}
-          ref: ${{ needs.authorize.outputs.head_sha }}
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+
+      - name: Download candidate UI image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: konflux-ui-image
+          path: .
+
+      - name: Download candidate e2e-tests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: candidate-e2e-tests
+          path: .
 
       - name: Set commit message
         env:
@@ -289,6 +368,7 @@ jobs:
         uses: ./.github/actions/konflux-ui-deploy-test
         with:
           job-type: ${{ env.JOB_TYPE }}
+          skip-ui-build: 'true'
 
       - name: Disc space stats after deploy
         run: |

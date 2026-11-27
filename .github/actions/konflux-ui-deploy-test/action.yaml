@@ -4,6 +4,10 @@ inputs:
   job-type:
     description: '"on-pr" or "periodic-local" or "periodic-stage"'
     required: true
+  skip-ui-build:
+    description: 'If true, load a prebuilt konflux-ui.tar instead of building from the workspace'
+    required: false
+    default: 'false'
 
 runs:
   using: "composite"
@@ -95,8 +99,8 @@ runs:
       shell: bash
 
     - name: Build konflux-ui image
+      if: ${{ inputs.skip-ui-build != 'true' }}
       env:
-        CYPRESS_GH_TOKEN: ${{ env.HAC_TEST_GH_TOKEN }}
         TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
         SOURCE_BRANCH: ${{ env.SOURCE_BRANCH }}
         PR_NUMBER: ${{ env.PR_NUMBER }}
@@ -107,6 +111,19 @@ runs:
       run: |
         : Build konflux-ui image
         ./pr_check.sh build
+      shell: bash
+
+    - name: Load prebuilt konflux-ui image
+      if: ${{ inputs.skip-ui-build == 'true' }}
+      run: |
+        : Load prebuilt UI image archive into kind
+        if [[ ! -f konflux-ui.tar ]]; then
+          echo "::error::Expected konflux-ui.tar when skip-ui-build=true"
+          exit 1
+        fi
+        kind load image-archive konflux-ui.tar -n konflux
+        rm -f konflux-ui.tar
+        podman system prune --all --force || true
       shell: bash
 
     - name: Inject custom UI image into proxy deployment
