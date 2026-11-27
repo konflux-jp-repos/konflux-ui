@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read
-      pull-requests: write
+      pull-requests: read
     outputs:
       pr_number: ${{ steps.auth.outputs.pr_number }}
       actor: ${{ steps.auth.outputs.actor }}
@@ -51,24 +51,77 @@ jobs:
         run: |
           set -euo pipefail
 
+          # ok-to-test is valid only when the latest label-add is at/after the current
+          # head commit time. Pushes do not clear labels; stale labels must not authorize.
+          ok_to_test_covers_head() {
+            local pr_number="$1"
+            local head_sha="$2"
+            local head_repo="$3"
+            local label_name="$4"
+
+            local commit_date label_date
+            commit_date=$(gh api "repos/${head_repo}/commits/${head_sha}" \
+              --jq '.commit.committer.date // .commit.author.date')
+            label_date=$(gh api --paginate "repos/${REPO}/issues/${pr_number}/events" \
+              --jq "[.[] | select(.event == \"labeled\" and .label.name == \"${label_name}\")] | max_by(.created_at) | .created_at // empty")
+
+            if [[ -z "$label_date" ]]; then
+              echo "No '${label_name}' labeled event found for PR #${pr_number}."
+              return 1
+            fi
+
+            local commit_epoch label_epoch
+            commit_epoch=$(date -u -d "$commit_date" +%s)
+            label_epoch=$(date -u -d "$label_date" +%s)
+
+            if (( label_epoch >= commit_epoch )); then
+              echo "'${label_name}' applied at ${label_date} covers head ${head_sha} (${commit_date})."
+              return 0
+            fi
+
+            echo "'${label_name}' applied at ${label_date} is older than head ${head_sha} (${commit_date}); re-apply the label for this commit."
+            return 1
+          }
+
           EVENT_ACTION=$(jq -r '.event_action // empty' "$GATE_METADATA_PATH")
-          PR_NUMBER=$(jq -r '.pr_number // empty' "$GATE_METADATA_PATH")
-          ACTOR=$(jq -r '.actor // empty' "$GATE_METADATA_PATH")
-          META_HEAD_REPO=$(jq -r '.head_repository // empty' "$GATE_METADATA_PATH")
+          PR_NUMBER_HINT=$(jq -r '.pr_number // empty' "$GATE_METADATA_PATH")
 
-          if [[ -z "$PR_NUMBER" && "$TRIGGER_EVENT" == "pull_request" ]]; then
-            PR_NUMBER=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" \
-              --jq '[.[] | select(.state == "open")][0].number // empty')
+          if [[ "$TRIGGER_EVENT" == "merge_group" ]]; then
+            {
+              echo "pr_number="
+              echo "actor="
+              echo "event_action=${EVENT_ACTION}"
+              echo "head_repository=${HEAD_REPO:-$REPO}"
+              echo "head_sha=${HEAD_SHA}"
+              echo "head_branch=${HEAD_BRANCH}"
+            } >> "$GITHUB_OUTPUT"
+            echo "Triggered by merge_group — skipping external authorization."
+            exit 0
           fi
 
-          if [[ -z "$ACTOR" && -n "$PR_NUMBER" ]]; then
-            ACTOR=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author --jq '.author.login')
+          # Resolve PR from GitHub for this run's head SHA. Metadata pr_number is a hint only.
+          MATCHED=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" \
+            --jq "[.[] | select(.state == \"open\" and .base.repo.full_name == \"${REPO}\" and .head.sha == \"${HEAD_SHA}\")]")
+          MATCH_COUNT=$(jq 'length' <<<"$MATCHED")
+
+          if [[ "$MATCH_COUNT" -eq 0 ]]; then
+            echo "### ❌ Cannot run E2E tests — no open PR matches head ${HEAD_SHA}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [[ "$MATCH_COUNT" -ne 1 ]]; then
+            echo "### ❌ Cannot run E2E tests — ambiguous PRs for head ${HEAD_SHA}: $(jq -r '.[].number' <<<"$MATCHED" | tr '\n' ' ')" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
-          RESOLVED_HEAD_REPO="${HEAD_REPO:-$META_HEAD_REPO}"
-          if [[ -z "$RESOLVED_HEAD_REPO" ]]; then
-            RESOLVED_HEAD_REPO="$REPO"
+          PR_NUMBER=$(jq -r '.[0].number' <<<"$MATCHED")
+          if [[ -n "$PR_NUMBER_HINT" && "$PR_NUMBER_HINT" != "$PR_NUMBER" ]]; then
+            echo "### ❌ Cannot run E2E tests — gate hint PR #${PR_NUMBER_HINT} does not match verified PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
+
+          ACTOR=$(jq -r '.[0].user.login' <<<"$MATCHED")
+          RESOLVED_HEAD_REPO=$(jq -r '.[0].head.repo.full_name' <<<"$MATCHED")
+          PR_LABELS=$(jq -r '.[0].labels[].name' <<<"$MATCHED")
 
           {
             echo "pr_number=${PR_NUMBER}"
@@ -79,24 +132,8 @@ jobs:
             echo "head_branch=${HEAD_BRANCH}"
           } >> "$GITHUB_OUTPUT"
 
-          if [[ "$TRIGGER_EVENT" == "merge_group" ]]; then
-            echo "Triggered by merge_group — skipping external authorization."
-            exit 0
-          fi
-
-          if [[ -z "$PR_NUMBER" ]]; then
-            echo "### ❌ Cannot run E2E tests — could not resolve PR number" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-          # New commits invalidate prior ok-to-test approval.
-          if [[ "$EVENT_ACTION" == "synchronize" ]]; then
-            gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label "ok-to-test" || true
-          fi
-
           WHITELISTED_BOTS=("red-hat-konflux[bot]" "konflux-ci-coder[bot]" "fullsend-ai-coder[bot]")
           REQUIRED_LABEL_NAME="ok-to-test"
-          PR_LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '.labels[].name')
 
           for BOT in "${WHITELISTED_BOTS[@]}"; do
             if [[ "$ACTOR" == "$BOT" ]]; then
@@ -106,8 +143,11 @@ jobs:
           done
 
           if [[ "$PR_LABELS" == *$REQUIRED_LABEL_NAME* ]]; then
-            echo "PR has '$REQUIRED_LABEL_NAME' label, skipping further checks."
-            exit 0
+            if ok_to_test_covers_head "$PR_NUMBER" "$HEAD_SHA" "$RESOLVED_HEAD_REPO" "$REQUIRED_LABEL_NAME"; then
+              echo "PR has '${REQUIRED_LABEL_NAME}' covering head ${HEAD_SHA}. Running E2E tests."
+              exit 0
+            fi
+            echo "PR has '${REQUIRED_LABEL_NAME}', but it does not cover head ${HEAD_SHA}."
           fi
 
           authorized=false
@@ -139,7 +179,7 @@ jobs:
 
           ### ❌ Cannot run E2E tests - at least one of the following conditions must be met:
           * PR author is a whitelisted bot (${WHITELISTED_BOTS[*]})
-          * PR has label '$REQUIRED_LABEL_NAME'
+          * PR has label '$REQUIRED_LABEL_NAME' applied for the current head commit (re-add after new pushes)
           * PR author has write (or higher) access on this repository
           EOF
           )

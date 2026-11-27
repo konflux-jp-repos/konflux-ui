@@ -188,12 +188,12 @@ Cypress E2E tests use a two-phase GitHub Actions flow (no `pull_request_target` 
 
 PR title validation follows the same pattern: [PR Title Check](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-title-check.yaml) fails the check on `pull_request`; [PR Title Check Comment](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-title-check-comment.yaml) posts the failure comment via `workflow_run` (needed for fork PRs).
 
-The E2E job installs Konflux from main and builds Konflux UI from the PR into a local kind image (not pushed). Logs are available from the GitHub Action Summary. Retrigger by pushing a commit, adding/re-adding `ok-to-test`, or using `Re-run jobs` on the E2E workflow.
+The E2E job installs Konflux from main and builds Konflux UI from the PR into a local kind image (not pushed). Logs are available from the GitHub Action Summary. Retrigger by pushing a commit, adding/re-adding `ok-to-test` for that commit, or using `Re-run jobs` on the E2E workflow.
 
 Authorization is fail-closed in Phase 2 before the secret-bearing deploy/e2e job. At least one of the following must be true:
 
 * PR author is a whitelisted bot (`red-hat-konflux[bot]`, `konflux-ci-coder[bot]`, `fullsend-ai-coder[bot]`)
-* PR has the `ok-to-test` label (required for external contributors; the label is removed on each `synchronize` so new commits need re-approval)
+* PR has the `ok-to-test` label **covering the current head commit** (required for external contributors). Approval is bound to head SHA timing: the latest `ok-to-test` label-add must be at or after the head commit time. New pushes invalidate a prior approval even if the label is still present — remove and re-add `ok-to-test` after pushing.
 * PR author has write (or higher) collaborator access on the repository
 
 > [!IMPORTANT]
