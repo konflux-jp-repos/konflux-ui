@@ -80,8 +80,10 @@ execute_test() {
     echo "COMMIT_INFO_AUTHOR: '${COMMIT_INFO_AUTHOR}'"
     echo "================================="
 
+    E2E_TESTS_DIR="${E2E_TESTS_DIR:-$PWD/e2e-tests}"
+
     COMMON_SETUP="-v $PWD/artifacts:/tmp/artifacts:Z,U \
-        -v $PWD/e2e-tests:/e2e:Z,U \
+        -v ${E2E_TESTS_DIR}:/e2e:Z,U \
         --timeout=3600 \
         -e CYPRESS_LOCAL_CLUSTER=${CYPRESS_LOCAL_CLUSTER} \
         -e CYPRESS_PERIODIC_RUN_STAGE=${CYPRESS_PERIODIC_RUN_STAGE} \

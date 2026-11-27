@@ -188,12 +188,12 @@ Cypress E2E tests use a two-phase GitHub Actions flow (no `pull_request_target` 
 
 PR title validation follows the same pattern: [PR Title Check](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-title-check.yaml) fails the check on `pull_request`; [PR Title Check Comment](https://github.com/konflux-ci/konflux-ui/blob/main/.github/workflows/pr-title-check-comment.yaml) posts the failure comment via `workflow_run` (needed for fork PRs).
 
-The secretless `build-candidate` job builds the PR/merge UI image. The credential-bearing `deploy-konflux-ui` job checks out the default-branch revision (so PR/merge-group changes to `.github/actions/konflux-ui-deploy-test` cannot run there), loads the prebuilt image, deploys Konflux, and runs Cypress. Logs are available from the GitHub Action Summary. Retrigger by pushing a commit, adding/re-adding `ok-to-test` for that commit, or using `Re-run jobs` on the E2E workflow.
+The secretless `build-candidate` job builds the PR/merge UI image and uploads the image tar plus `e2e-tests`. The credential-bearing `deploy-konflux-ui` job checks out the default-branch revision (so PR/merge-group changes to `.github/actions/konflux-ui-deploy-test` cannot run there), downloads candidate artifacts into an isolated temp directory (never into the trusted checkout), allowlists transferred e2e paths before mounting them for Cypress, loads the prebuilt image, deploys Konflux, and runs tests. Logs are available from the GitHub Action Summary. Retrigger by pushing a commit, adding/re-adding `ok-to-test` for that commit, or using `Re-run jobs` on the E2E workflow.
 
 Authorization is fail-closed in Phase 2 before the secret-bearing deploy/e2e job. At least one of the following must be true:
 
 * PR author is a whitelisted bot (`red-hat-konflux[bot]`, `konflux-ci-coder[bot]`, `fullsend-ai-coder[bot]`)
-* PR has the `ok-to-test` label **covering the current head commit** (required for external contributors). Approval is bound to head SHA timing: the latest `ok-to-test` label-add must be at or after the head commit time. New pushes invalidate a prior approval even if the label is still present — remove and re-add `ok-to-test` after pushing.
+* PR has the `ok-to-test` label **approved for the current head SHA** (required for external contributors). On label add, Phase 2 stores that head SHA in a sticky PR comment and later runs only when the stored SHA matches the current PR head. New pushes change the head SHA, so the prior approval no longer matches — remove and re-add `ok-to-test` after pushing.
 * PR author has write (or higher) collaborator access on the repository
 
 > [!IMPORTANT]
@@ -215,7 +215,7 @@ The workflow is separated into the actions files within `.github/actions` direct
 
 The job installs Konflux from the konflux-ci main branch. Konflux UI with all the changes introduced in a PR is build into an image which is deployed on local a kind cluster (image is not pushed anywhere).
 
-The test step executes `pr_check.sh` file which does the tests setup and runs tests. Changes made in this bash file are already propagated when the PR head is checked out in Phase 2. If the Containerfile is changed, the image is rebuilt (not pushed). Environment variables are set and tests are run with the test code from the PR.
+The test step executes `pr_check.sh` from the trusted base checkout (deploy job). Candidate UI is loaded from the isolated image artifact; Cypress mounts allowlisted files staged from the candidate `e2e-tests` artifact (`E2E_TESTS_DIR`). If the Containerfile is changed on the PR, the image is rebuilt in `build-candidate` (not pushed).
 
 #### Konflux integration pipeline
 

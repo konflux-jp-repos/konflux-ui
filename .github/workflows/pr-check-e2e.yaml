@@ -21,7 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read
-      pull-requests: read
+      pull-requests: write
+      issues: write
     outputs:
       pr_number: ${{ steps.auth.outputs.pr_number }}
       actor: ${{ steps.auth.outputs.actor }}
@@ -51,39 +52,65 @@ jobs:
         run: |
           set -euo pipefail
 
-          # ok-to-test is valid only when the latest label-add is at/after the current
-          # head commit time. Pushes do not clear labels; stale labels must not authorize.
+          APPROVAL_MARKER='<!-- ok-to-test-sha:'
+
+          get_approved_sha() {
+            local pr_number="$1"
+            local body
+            body=$(gh api --paginate "repos/${REPO}/issues/${pr_number}/comments" \
+              --jq "[.[] | select(.body != null and (.body | contains(\"${APPROVAL_MARKER}\"))) | .body] | last // empty")
+            if [[ -z "$body" ]]; then
+              printf ''
+              return
+            fi
+            printf '%s\n' "$body" | sed -n 's/.*<!-- ok-to-test-sha: *\([a-f0-9]\{40\}\) *-->.*/\1/p' | tail -n1
+          }
+
+          store_approved_sha() {
+            local pr_number="$1"
+            local head_sha="$2"
+            local body="ok-to-test approved for \`${head_sha}\`. Re-add the label after new pushes.
+
+          ${APPROVAL_MARKER} ${head_sha} -->"
+            local comment_id
+            comment_id=$(gh api --paginate "repos/${REPO}/issues/${pr_number}/comments" \
+              --jq "[.[] | select(.body != null and (.body | contains(\"${APPROVAL_MARKER}\)))] | last | .id // empty")
+            if [[ -n "$comment_id" ]]; then
+              gh api -X PATCH "repos/${REPO}/issues/comments/${comment_id}" -f body="$body" >/dev/null
+            else
+              gh api -X POST "repos/${REPO}/issues/${pr_number}/comments" -f body="$body" >/dev/null
+            fi
+            echo "Stored ok-to-test approval for ${head_sha}."
+          }
+
           ok_to_test_covers_head() {
             local pr_number="$1"
             local head_sha="$2"
-            local head_repo="$3"
+            local event_action="$3"
             local label_name="$4"
+            local required_label="$5"
 
-            local commit_date label_date
-            commit_date=$(gh api "repos/${head_repo}/commits/${head_sha}" \
-              --jq '.commit.committer.date // .commit.author.date')
-            label_date=$(gh api --paginate "repos/${REPO}/issues/${pr_number}/events" \
-              --jq "[.[] | select(.event == \"labeled\" and .label.name == \"${label_name}\")] | max_by(.created_at) | .created_at // empty")
-
-            if [[ -z "$label_date" ]]; then
-              echo "No '${label_name}' labeled event found for PR #${pr_number}."
-              return 1
-            fi
-
-            local commit_epoch label_epoch
-            commit_epoch=$(date -u -d "$commit_date" +%s)
-            label_epoch=$(date -u -d "$label_date" +%s)
-
-            if (( label_epoch >= commit_epoch )); then
-              echo "'${label_name}' applied at ${label_date} covers head ${head_sha} (${commit_date})."
+            if [[ "$event_action" == "labeled" && "$label_name" == "$required_label" ]]; then
+              store_approved_sha "$pr_number" "$head_sha"
               return 0
             fi
 
-            echo "'${label_name}' applied at ${label_date} is older than head ${head_sha} (${commit_date}); re-apply the label for this commit."
-            return 1
+            local approved_sha
+            approved_sha=$(get_approved_sha "$pr_number")
+            if [[ -z "$approved_sha" ]]; then
+              echo "No stored ok-to-test approval SHA for PR #${pr_number}."
+              return 1
+            fi
+            if [[ "$approved_sha" != "$head_sha" ]]; then
+              echo "Stored ok-to-test SHA ${approved_sha} does not match head ${head_sha}; re-add the label."
+              return 1
+            fi
+            echo "Stored ok-to-test SHA matches head ${head_sha}."
+            return 0
           }
 
           EVENT_ACTION=$(jq -r '.event_action // empty' "$GATE_METADATA_PATH")
+          LABEL_NAME=$(jq -r '.label_name // empty' "$GATE_METADATA_PATH")
           PR_NUMBER_HINT=$(jq -r '.pr_number // empty' "$GATE_METADATA_PATH")
 
           if [[ "$TRIGGER_EVENT" == "merge_group" ]]; then
@@ -143,11 +170,11 @@ jobs:
           done
 
           if [[ "$PR_LABELS" == *$REQUIRED_LABEL_NAME* ]]; then
-            if ok_to_test_covers_head "$PR_NUMBER" "$HEAD_SHA" "$RESOLVED_HEAD_REPO" "$REQUIRED_LABEL_NAME"; then
-              echo "PR has '${REQUIRED_LABEL_NAME}' covering head ${HEAD_SHA}. Running E2E tests."
+            if ok_to_test_covers_head "$PR_NUMBER" "$HEAD_SHA" "$EVENT_ACTION" "$LABEL_NAME" "$REQUIRED_LABEL_NAME"; then
+              echo "PR has '${REQUIRED_LABEL_NAME}' approved for head ${HEAD_SHA}. Running E2E tests."
               exit 0
             fi
-            echo "PR has '${REQUIRED_LABEL_NAME}', but it does not cover head ${HEAD_SHA}."
+            echo "PR has '${REQUIRED_LABEL_NAME}', but approval does not match head ${HEAD_SHA}."
           fi
 
           authorized=false
@@ -290,17 +317,120 @@ jobs:
           repository: ${{ github.repository }}
           ref: ${{ github.sha }}
 
-      - name: Download candidate UI image
+      - name: Download candidate UI image (isolated)
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: konflux-ui-image
-          path: .
+          path: ${{ runner.temp }}/candidate-artifacts
 
-      - name: Download candidate e2e-tests
+      - name: Download candidate e2e-tests (isolated)
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: candidate-e2e-tests
-          path: .
+          path: ${{ runner.temp }}/candidate-artifacts
+
+      - name: Validate and stage allowlisted candidate artifacts
+        id: stage-artifacts
+        env:
+          CANDIDATE_ROOT: ${{ runner.temp }}/candidate-artifacts
+          STAGED_E2E: ${{ runner.temp }}/staged-e2e-tests
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+
+          # Keep all candidate material outside the trusted checkout. Only allowlisted
+          # e2e paths are staged (still under RUNNER_TEMP) for the Cypress mount.
+          case "${CANDIDATE_ROOT}" in
+            "${WORKSPACE}"|"${WORKSPACE}"/*)
+              echo "::error::Candidate artifact root must not be inside the trusted checkout"
+              exit 1
+              ;;
+          esac
+          case "${STAGED_E2E}" in
+            "${WORKSPACE}"|"${WORKSPACE}"/*)
+              echo "::error::Staged e2e directory must not be inside the trusted checkout"
+              exit 1
+              ;;
+          esac
+
+          IMAGE_SRC="${CANDIDATE_ROOT}/konflux-ui.tar"
+          E2E_SRC="${CANDIDATE_ROOT}/e2e-tests"
+          if [[ ! -d "$E2E_SRC" && -d "${CANDIDATE_ROOT}/tests" ]]; then
+            # Artifact may flatten e2e-tests contents at the download root.
+            E2E_SRC="${CANDIDATE_ROOT}"
+          fi
+
+          if [[ ! -f "$IMAGE_SRC" ]] || [[ -L "$IMAGE_SRC" ]]; then
+            echo "::error::Expected a regular file at ${IMAGE_SRC}"
+            find "$CANDIDATE_ROOT" -maxdepth 3 -print || true
+            exit 1
+          fi
+          if [[ "$(basename "$IMAGE_SRC")" != "konflux-ui.tar" ]]; then
+            echo "::error::UI image artifact name is not allowlisted"
+            exit 1
+          fi
+
+          if [[ ! -d "$E2E_SRC" ]]; then
+            echo "::error::Expected candidate e2e-tests directory under ${CANDIDATE_ROOT}"
+            find "$CANDIDATE_ROOT" -maxdepth 3 -print || true
+            exit 1
+          fi
+
+          rm -rf "$STAGED_E2E"
+          mkdir -p "$STAGED_E2E"
+
+          # Allowlist only Cypress test material. Reject path traversal, symlinks that
+          # escape the artifact root, and host-executable scripts.
+          while IFS= read -r -d '' rel; do
+            rel="${rel#./}"
+            [[ -n "$rel" ]] || continue
+            case "$rel" in
+              *..*)
+                echo "::error::Refusing path with '..': ${rel}"
+                exit 1
+                ;;
+            esac
+            case "$rel" in
+              tests|tests/*|support|support/*|utils|utils/*|fixtures|fixtures/*|cypress.config.*|tsconfig*.json|package.json|package-lock.json|yarn.lock|.yarnrc.yml|.yarn|.yarn/*|.cypress*|*.d.ts) ;;
+              *)
+                echo "Skipping non-allowlisted path: ${rel}"
+                continue
+                ;;
+            esac
+            case "$rel" in
+              *.sh|*.bash|*.command|entrypoint.sh|delete-script.sh|Containerfile)
+                echo "::error::Refusing host-executable or build path from candidate artifact: ${rel}"
+                exit 1
+                ;;
+            esac
+            src="${E2E_SRC}/${rel}"
+            # Ensure resolved path stays under E2E_SRC (no symlink/absolute escape).
+            src_real=$(readlink -f "$src")
+            case "$src_real" in
+              "${E2E_SRC}"|"${E2E_SRC}"/*) ;;
+              *)
+                echo "::error::Path escapes candidate e2e root: ${rel} -> ${src_real}"
+                exit 1
+                ;;
+            esac
+            dest="${STAGED_E2E}/${rel}"
+            mkdir -p "$(dirname "$dest")"
+            if [[ -d "$src" && ! -L "$src" ]]; then
+              mkdir -p "$dest"
+            else
+              cp -a "$src" "$dest"
+            fi
+          done < <(cd "$E2E_SRC" && find . -print0)
+
+          if [[ ! -d "${STAGED_E2E}/tests" ]]; then
+            echo "::error::Allowlisted e2e staging is missing tests/"
+            exit 1
+          fi
+
+          {
+            echo "CANDIDATE_UI_TAR=${IMAGE_SRC}"
+            echo "E2E_TESTS_DIR=${STAGED_E2E}"
+          } >> "$GITHUB_ENV"
 
       - name: Set commit message
         env:

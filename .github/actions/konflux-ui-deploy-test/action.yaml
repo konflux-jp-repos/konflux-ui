@@ -115,14 +115,16 @@ runs:
 
     - name: Load prebuilt konflux-ui image
       if: ${{ inputs.skip-ui-build == 'true' }}
+      env:
+        CANDIDATE_UI_TAR: ${{ env.CANDIDATE_UI_TAR }}
       run: |
         : Load prebuilt UI image archive into kind
-        if [[ ! -f konflux-ui.tar ]]; then
-          echo "::error::Expected konflux-ui.tar when skip-ui-build=true"
+        IMAGE_TAR="${CANDIDATE_UI_TAR:-konflux-ui.tar}"
+        if [[ ! -f "$IMAGE_TAR" ]]; then
+          echo "::error::Expected UI image archive at ${IMAGE_TAR} when skip-ui-build=true"
           exit 1
         fi
-        kind load image-archive konflux-ui.tar -n konflux
-        rm -f konflux-ui.tar
+        kind load image-archive "$IMAGE_TAR" -n konflux
         podman system prune --all --force || true
       shell: bash
 
